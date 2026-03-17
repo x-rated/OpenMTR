@@ -18,7 +18,6 @@
 
 class MicaDialog : public QDialog
 {
-    Q_OBJECT
 public:
     // title   = bold heading  e.g. "OpenMTR"
     // message = body text     e.g. "Could not resolve..."
