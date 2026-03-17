@@ -131,6 +131,7 @@
   <!-- Headers -->
   <ItemGroup>
     <ClInclude Include="MainWindow.h" />
+    <ClInclude Include="MicaDialog.h" />
     <ClInclude Include="WinMTRNet.h" />
     <ClInclude Include="WinMTRNetWrapper.h" />
     <ClInclude Include="CrashHandler.h" />
