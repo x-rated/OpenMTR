@@ -1,16 +1,15 @@
 // pack.js — run after windeployqt to produce a single exe via Enigma Virtual Box
 // Usage: node pack.js <exeDir> <outputExe>
-//   exeDir    = folder containing OpenMTR.exe + all DLLs (e.g. bin\x64\Release)
-//   outputExe = where to write the packed single exe (e.g. OpenMTR.exe)
-
+//   exeDir    = folder containing OpenMTR2.exe + all DLLs (e.g. bin\x64\Release)
+//   outputExe = where to write the packed single exe (e.g. OpenMTR2.exe)
 const path = require('path');
 const generateEvb = require('generate-evb');
 const evb = require('enigmavirtualbox');
 
-const exeDir   = path.resolve(process.argv[2]);
+const exeDir    = path.resolve(process.argv[2]);
 const outputExe = path.resolve(process.argv[3]);
-const inputExe  = path.join(exeDir, 'OpenMTR.exe');
-const evbFile   = path.join(path.dirname(outputExe), 'OpenMTR.evb');
+const inputExe  = path.join(exeDir, 'OpenMTR2.exe');
+const evbFile   = path.join(path.dirname(outputExe), 'OpenMTR2.evb');
 
 console.log('Input exe :', inputExe);
 console.log('Output exe:', outputExe);
