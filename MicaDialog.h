@@ -64,22 +64,16 @@ private:
         btnRow->addStretch();
         btnRow->addWidget(closeBtn);
 
-        // Button area — very subtle Mica tint, same padding as toolbar
-        auto* btnArea = new QWidget(frame);
-        btnArea->setObjectName("micaBtnArea");
-        auto* btnAreaLayout = new QVBoxLayout(btnArea);
-        btnAreaLayout->setContentsMargins(24, 10, 24, 12);
-        btnAreaLayout->addLayout(btnRow);
-
         auto* inner = new QVBoxLayout(frame);
-        inner->setContentsMargins(24, 20, 24, 0);
+        inner->setContentsMargins(24, 20, 24, 14);
         inner->setSpacing(0);
         inner->addWidget(titleLabel);
         inner->addSpacing(8);
         inner->addWidget(bodyLabel);
         inner->addSpacing(20);
         inner->addWidget(sep);
-        inner->addWidget(btnArea);
+        inner->addSpacing(10);
+        inner->addLayout(btnRow);
 
         auto* outer = new QVBoxLayout(this);
         outer->setContentsMargins(0, 0, 0, 0);
@@ -106,12 +100,7 @@ private:
                     background-color: rgba(255,255,255,0.06);
                     border: none;
                 }
-                #micaBtnArea {
-                    background-color: rgba(255,255,255,0.03);
-                    border-bottom-left-radius: 12px;
-                    border-bottom-right-radius: 12px;
-                }
-                #micaClose {
+#micaClose {
                     background-color: rgba(255,255,255,0.06);
                     color: #ffffff;
                     border: 1px solid rgba(255,255,255,0.09);
@@ -143,12 +132,7 @@ private:
                     background-color: rgba(0,0,0,0.05);
                     border: none;
                 }
-                #micaBtnArea {
-                    background-color: rgba(0,0,0,0.02);
-                    border-bottom-left-radius: 12px;
-                    border-bottom-right-radius: 12px;
-                }
-                #micaClose {
+#micaClose {
                     background-color: rgba(255,255,255,0.7);
                     color: #1a1a1a;
                     border: 1px solid rgba(0,0,0,0.14);
