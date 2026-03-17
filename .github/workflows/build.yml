@@ -1,0 +1,75 @@
+name: Build OpenMTR
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - 'LICENSE'
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Qt6
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: '6.10.1'
+        host: 'windows'
+        target: 'desktop'
+        arch: 'win64_msvc2022_64'
+        cache: true
+
+    - name: Setup MSVC
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Update Qt path in project
+      shell: pwsh
+      run: |
+        $qtDir = $env:QT_ROOT_DIR
+        Write-Host "Qt root dir: $qtDir"
+        (Get-Content OpenMTR.vcxproj) `
+          -replace 'C:\\Qt\\6\.10\.1\\msvc2022_64', $qtDir `
+          | Set-Content OpenMTR.vcxproj
+
+    - name: Build Release
+      run: msbuild OpenMTR.sln /p:Configuration=Release /p:Platform=x64 /m
+
+    - name: Deploy Qt DLLs
+      shell: pwsh
+      run: |
+        $windeployqt = "$env:QT_ROOT_DIR\bin\windeployqt6.exe"
+        & $windeployqt --release --no-translations --no-system-d3d-compiler bin\x64\Release\OpenMTR.exe
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Cache node_modules
+      uses: actions/cache@v4
+      with:
+        path: node_modules
+        key: npm-evb-v1
+
+    - name: Install EVB tools
+      run: npm install enigmavirtualbox generate-evb
+
+    - name: Pack single exe
+      run: node .github/workflows/pack.js bin\x64\Release OpenMTR.exe
+
+    - name: Show packed exe size
+      shell: pwsh
+      run: Get-Item OpenMTR.exe | Select-Object Name, @{N='MB';E={[math]::Round($_.Length/1MB,2)}}
+
+    - name: Upload single exe
+      uses: actions/upload-artifact@v4
+      with:
+        name: OpenMTR-x64
+        path: OpenMTR.exe
