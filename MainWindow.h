@@ -18,8 +18,7 @@
 #include <ws2ipdef.h>
 #include <winreg.h>
 
-import WinMTROptionsProvider;
-import WinMTR.Net;
+#include "WinMTRNetWrapper.h"
 
 #include <memory>
 #include <algorithm>
@@ -28,6 +27,14 @@ import WinMTR.Net;
 #include <stop_token>
 #include <unordered_map>
 #include <string>
+
+// Options interface — implemented by MainWindow, consumed by WinMTRNetWrapper
+struct IWinMTROptionsProvider {
+    virtual ~IWinMTROptionsProvider() = default;
+    [[nodiscard]] virtual unsigned getPingSize() const noexcept = 0;
+    [[nodiscard]] virtual double   getInterval() const noexcept = 0;
+    [[nodiscard]] virtual bool     getUseDNS()   const noexcept = 0;
+};
 
 class MainWindow : public QMainWindow, public IWinMTROptionsProvider
 {
@@ -60,34 +67,34 @@ private:
     void applyWin11Chrome(bool dark);
     void updateTable();
     QString buildTextExport() const;
-    static bool isWindowsDarkMode();
+    static bool    isWindowsDarkMode();
     static QString lookupASN(const QString& ip, bool ipv6);
-    QString getCachedASN(const QString& ip, bool ipv6) const;
+    QString        getCachedASN(const QString& ip, bool ipv6) const;
 
     // UI
-    QWidget*        m_toolbar       = nullptr;
-    QLineEdit*      m_targetEdit    = nullptr;
-    QSpinBox*       m_pingSizeBox   = nullptr;
-    QCheckBox*      m_ipv6Check     = nullptr;
-    QPushButton*    m_startStopBtn  = nullptr;
-    QPushButton*    m_copyBtn       = nullptr;
-    QPushButton*    m_exportBtn     = nullptr;
-    QPushButton*    m_themeBtn      = nullptr;
-    QStackedWidget* m_stack         = nullptr;
-    QLabel*         m_loadingLabel  = nullptr;
-    QTableWidget*   m_table         = nullptr;
+    QWidget*        m_toolbar      = nullptr;
+    QLineEdit*      m_targetEdit   = nullptr;
+    QSpinBox*       m_pingSizeBox  = nullptr;
+    QCheckBox*      m_ipv6Check    = nullptr;
+    QPushButton*    m_startStopBtn = nullptr;
+    QPushButton*    m_copyBtn      = nullptr;
+    QPushButton*    m_exportBtn    = nullptr;
+    QPushButton*    m_themeBtn     = nullptr;
+    QStackedWidget* m_stack        = nullptr;
+    QLabel*         m_loadingLabel = nullptr;
+    QTableWidget*   m_table        = nullptr;
 
     // State
-    std::shared_ptr<WinMTRNet>     m_net;
-    std::stop_source               m_stopSource;
-    std::vector<std::array<int,2>> m_baseline;
-    bool                           m_tracing   = false;
-    bool                           m_darkMode  = true;
-    bool                           m_counting  = false;  // title timer active after warmup
-    QTimer*                        m_refreshTimer   = nullptr;
-    QTimer*                        m_elapsedTimer   = nullptr;
-    QTimer*                        m_warmupTimer    = nullptr;
-    int                            m_warmupGen      = 0;
-    QElapsedTimer                  m_elapsed;
+    std::shared_ptr<WinMTRNetWrapper>    m_net;
+    std::stop_source                     m_stopSource;
+    std::vector<std::array<int, 2>>      m_baseline;
+    bool    m_tracing  = false;
+    bool    m_darkMode = true;
+    bool    m_counting = false;
+    QTimer* m_refreshTimer = nullptr;
+    QTimer* m_elapsedTimer = nullptr;
+    QTimer* m_warmupTimer  = nullptr;
+    int     m_warmupGen    = 0;
+    QElapsedTimer m_elapsed;
     mutable std::unordered_map<std::string, QString> m_asnCache;
 };

@@ -45,6 +45,9 @@ struct WinMTRHostInfo {
     std::wstring  _name;   // cached name for getName()
 
     std::wstring getName() const { return _name; }
+    int getAvg() const {
+        return (returned == 0) ? 0 : static_cast<int>(total / returned);
+    }
 };
 
 // ── Helper: wstring IP from SOCKADDR_INET ────────────────────────────────────
