@@ -628,10 +628,14 @@ void MainWindow::updateTable()
             setCell(4,  QString::number(loss) + "%", C);
             setCell(5,  QString::number(xmit), C);
             setCell(6,  QString::number(returned), C);
-            setCell(7,  (h.best == 0 && returned == 0) ? "-" : QString::number(h.best), C);
-            setCell(8,  returned == 0 ? "-" : QString::number(h.getAvg()), C);
-            setCell(9,  returned == 0 ? "-" : QString::number(h.worst), C);
-            setCell(10, returned == 0 ? "-" : QString::number(h.last),  C);
+            // Latency values (best/avg/worst/last) are raw engine values, not
+            // baselined. Guard on h.returned (total ever received) not the
+            // post-baseline `returned`, so hops that only replied during warmup
+            // still show their RTT instead of all dashes.
+            setCell(7,  h.returned == 0 ? "-" : QString::number(h.best),     C);
+            setCell(8,  h.returned == 0 ? "-" : QString::number(h.getAvg()), C);
+            setCell(9,  h.returned == 0 ? "-" : QString::number(h.worst),    C);
+            setCell(10, h.returned == 0 ? "-" : QString::number(h.last),     C);
 
             if (auto* lossItem = m_table->item(i, 4)) {
                 QColor fg;
