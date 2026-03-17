@@ -1,129 +1,204 @@
-# Migration steps — from OpenMTR → OpenMTR2
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
 
-Follow these steps in order to stand up the new repo and push it to GitHub.
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567891}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>OpenMTR2</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>OpenMTR2</ProjectName>
+  </PropertyGroup>
 
----
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
 
-## 1. Create the new GitHub repo
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
 
-Go to https://github.com/new and create:
-- Name: `OpenMTR2`
-- Description: OpenMTR — modern Qt6 network diagnostic tool (clean fork)
-- Public
-- No README, no .gitignore (we supply our own)
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
 
----
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(SolutionDir)bin\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)obj\$(Platform)\$(Configuration)\</IntDir>
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(SolutionDir)bin\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)obj\$(Platform)\$(Configuration)\</IntDir>
+    <LinkIncremental>true</LinkIncremental>
+  </PropertyGroup>
 
-## 2. Clone your existing OpenMTR locally (if not already)
+  <!-- Qt: use QT_ROOT_DIR env var (set by install-qt-action), fall back to local path -->
+  <PropertyGroup>
+    <QtDir Condition="'$(QT_ROOT_DIR)'!=''">$(QT_ROOT_DIR)</QtDir>
+    <QtDir Condition="'$(QT_ROOT_DIR)'==''">C:\Qt\6.10.1\msvc2022_64</QtDir>
+  </PropertyGroup>
 
-```
-git clone https://github.com/x-rated/OpenMTR.git
-```
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_WINDOWS;WIN32;STRICT;_STRICT;UNICODE;_UNICODE;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <AdditionalOptions>/Zc:__cplusplus /Zc:noexceptTypes /Zc:throwingNew /d2FH4 /Gw %(AdditionalOptions)</AdditionalOptions>
+      <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <WholeProgramOptimization>true</WholeProgramOptimization>
+      <AdditionalIncludeDirectories>$(QtDir)\include;$(QtDir)\include\QtWidgets;$(QtDir)\include\QtCore;$(QtDir)\include\QtGui;$(ProjectDir);$(ProjectDir)engine;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
+      <AdditionalLibraryDirectories>$(QtDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>Qt6Widgets.lib;Qt6Core.lib;Qt6Gui.lib;Qt6EntryPoint.lib;dwmapi.lib;onecore.lib;ws2_32.lib;Iphlpapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
 
----
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_WINDOWS;WIN32;STRICT;_STRICT;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <AdditionalOptions>/Zc:__cplusplus /Zc:noexceptTypes /Zc:throwingNew /d2FH4 %(AdditionalOptions)</AdditionalOptions>
+      <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <AdditionalIncludeDirectories>$(QtDir)\include;$(QtDir)\include\QtWidgets;$(QtDir)\include\QtCore;$(QtDir)\include\QtGui;$(ProjectDir);$(ProjectDir)engine;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(QtDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>Qt6Widgetsd.lib;Qt6Cored.lib;Qt6Guid.lib;Qt6EntryPointd.lib;dwmapi.lib;onecore.lib;ws2_32.lib;Iphlpapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
 
-## 3. Clone White-Tiger/WinMTR for its src/ files
+  <!-- Qt MOC -->
+  <ItemGroup>
+    <CustomBuild Include="MainWindow.h">
+      <Command>$(QtDir)\bin\moc.exe %(FullPath) -o $(IntDir)moc_%(Filename).cpp</Command>
+      <Outputs>$(IntDir)moc_%(Filename).cpp</Outputs>
+      <Message>MOC %(Filename).h</Message>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="resources.qrc">
+      <Command>$(QtDir)\bin\rcc.exe -name resources %(FullPath) -o $(IntDir)qrc_resources.cpp</Command>
+      <Outputs>$(IntDir)qrc_resources.cpp</Outputs>
+      <Message>RCC %(Filename).qrc</Message>
+    </CustomBuild>
+  </ItemGroup>
 
-```
-git clone https://github.com/White-Tiger/WinMTR.git winmtr-redux-temp
-```
+  <!-- Qt source files -->
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="MainWindow.cpp" />
+    <ClCompile Include="$(IntDir)moc_MainWindow.cpp" />
+    <ClCompile Include="$(IntDir)qrc_resources.cpp" />
+  </ItemGroup>
 
----
+  <!-- Win32 resource -->
+  <ItemGroup>
+    <ResourceCompile Include="app.rc" />
+  </ItemGroup>
 
-## 4. Set up the OpenMTR2 folder
+  <!-- Engine module partition implementations -->
+  <ItemGroup>
+    <ClCompile Include="engine\WinMTRNet-Getters.cpp">
+      <CompileAs>CompileAsCppModuleInternalPartition</CompileAs>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="engine\WinMTRNet-Tracing.cpp">
+      <CompileAs>CompileAsCppModuleInternalPartition</CompileAs>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+  </ItemGroup>
 
-```
-mkdir OpenMTR2
-cd OpenMTR2
-git init
-git remote add origin https://github.com/x-rated/OpenMTR2.git
-```
+  <!-- Engine module interfaces -->
+  <ItemGroup>
+    <ClCompile Include="engine\WinMTRNet-ClassDef.ixx">
+      <CompileAs>CompileAsCppModule</CompileAs>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="engine\WinMTRNet.ixx">
+      <CompileAs>CompileAsCppModule</CompileAs>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="engine\WinMTRSNetHost.ixx">
+      <CompileAs>CompileAsCppModule</CompileAs>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="engine\WinMTRICMPUtils.ixx">
+      <CompileAs>CompileAsCppModule</CompileAs>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="engine\WinMTRIPUtils.ixx">
+      <CompileAs>CompileAsCppModule</CompileAs>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="engine\WinMTRDnsUtil.ixx">
+      <CompileAs>CompileAsCppModule</CompileAs>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="engine\WinMTRUtils.ixx">
+      <CompileAs>CompileAsCppModule</CompileAs>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="engine\WinMTRWSAhelper.ixx">
+      <CompileAs>CompileAsCppModule</CompileAs>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="engine\IWinMTROptionsProvider.ixx">
+      <CompileAs>CompileAsCppModule</CompileAs>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <!-- Header unit -->
+    <ClCompile Include="engine\WinMTRICMPPIOdef.h">
+      <CompileAs>CompileAsHeaderUnit</CompileAs>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+  </ItemGroup>
 
----
+  <!-- NOTE: engine\winmtr-redux\ files are NOT compiled — reference only -->
 
-## 5. Copy all files from OpenMTR into OpenMTR2 root
+  <ItemGroup>
+    <ClInclude Include="MainWindow.h" />
+    <ClInclude Include="WinMTRNetWrapper.h" />
+    <ClInclude Include="CrashHandler.h" />
+    <ClInclude Include="engine\targetver.h" />
+  </ItemGroup>
 
-Copy these files from OpenMTR/:
-- MainWindow.cpp
-- MainWindow.h
-- WinMTRNetWrapper.h
-- CrashHandler.h
-- main.cpp
-- resources.qrc
-- app.rc
-- app.ico
-- check.svg
-- app.manifest
-- LICENSE
-- engine/   (entire folder)
+  <ItemGroup>
+    <Manifest Include="app.manifest" />
+  </ItemGroup>
 
----
-
-## 6. Copy the supplied scaffold files into OpenMTR2
-
-These are the files generated for this repo:
-- README.md
-- .gitignore
-- OpenMTR2.sln
-- OpenMTR2.vcxproj
-- .github/workflows/build.yml
-- engine/winmtr-redux/ATTRIBUTION.md
-
----
-
-## 7. Copy White-Tiger/WinMTR src/ into engine/winmtr-redux/
-
-```
-cp winmtr-redux-temp/src/* OpenMTR2/engine/winmtr-redux/
-```
-
-The files there are reference-only and are NOT added to the .vcxproj compile list.
-
----
-
-## 8. Rename references inside MainWindow.cpp and main.cpp
-
-Do a find-and-replace:
-- `"OpenMTR v1.0.0"` → `"OpenMTR v2.0.0"` (or keep v1.0.0 — your call)
-- Window title string in setWindowTitle() calls
-
-The .vcxproj already outputs `OpenMTR2.exe`. Once you rename the repo to
-`OpenMTR` you can rename the .sln/.vcxproj back to `OpenMTR`.
-
----
-
-## 9. First commit and push
-
-```
-cd OpenMTR2
-git add .
-git commit -m "Initial commit — OpenMTR2 with Qt6 UI + WinMTR-refresh engine + WinMTR Redux reference"
-git push -u origin main
-```
-
----
-
-## 10. Verify GitHub Actions
-
-Go to https://github.com/x-rated/OpenMTR2/actions — the build job should
-trigger automatically and produce an `OpenMTR2-x64` artifact within ~5 minutes.
-
----
-
-## 11. Later: rename and archive
-
-Once OpenMTR2 is stable:
-1. Archive `x-rated/OpenMTR` (Settings → Archive repository)
-2. Rename `x-rated/OpenMTR2` → `OpenMTR` (Settings → Repository name)
-3. Update README and any external links
-
----
-
-## Notes
-
-- The `engine/winmtr-redux/` files are GPL-2.0, same as this project.
-  ATTRIBUTION.md inside that folder documents the origin.
-- The active engine is `engine/*.ixx` (WinMTR-refresh by leeter) — the
-  winmtr-redux files are not compiled.
-- To create a tagged release: `git tag v2.0.0 && git push origin v2.0.0`
-  The CI `release` job will auto-run and create a GitHub Release with a zip.
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
