@@ -470,7 +470,7 @@ void WinMTRNet::UpdateRTT(int at, int rtt)
     WaitForSingleObject(ghMutex, INFINITE);
     host[at].last   = rtt;
     host[at].total += rtt;
-    if (host[at].best > rtt || host[at].xmit == 1) host[at].best  = rtt;
+    if (host[at].returned == 0 || host[at].best > rtt) host[at].best = rtt;
     if (host[at].worst < rtt)                       host[at].worst = rtt;
     ReleaseMutex(ghMutex);
 }
