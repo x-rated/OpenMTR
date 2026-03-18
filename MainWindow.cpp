@@ -627,7 +627,7 @@ void MainWindow::updateTable()
             int returned  = std::max(0, h.returned  - bReturned);
             int loss      = (xmit == 0) ? 0 : (100 - (100 * returned / xmit));
 
-            setCell(4,  QString::number(loss) + "%", C);
+            setCell(4,  QString::number(loss), C);
             setCell(5,  QString::number(xmit), C);
             setCell(6,  QString::number(returned), C);
             // Latency values (best/avg/worst/last) are raw engine values, not
