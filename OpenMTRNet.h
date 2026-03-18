@@ -222,6 +222,16 @@ public:
         int maxHops = m_net->GetMax();
         int rows = (maxHops > 0 && maxHops <= MAX_HOPS) ? maxHops : MAX_HOPS;
 
+        // If GetMax() hasn't found the destination yet (still == MAX_HOPS),
+        // only show hops that have actually sent at least one packet. This
+        // avoids showing 30 empty rows while the route is still being discovered.
+        if (rows == MAX_HOPS) {
+            int lastActive = 0;
+            for (int i = 0; i < MAX_HOPS; ++i)
+                if (m_net->GetXmit(i) > 0) lastActive = i + 1;
+            if (lastActive > 0) rows = lastActive;
+        }
+
         for (int i = 0; i < rows; ++i) {
             OpenMTRHostInfo h;
             sockaddr* sa = m_net->GetAddr(i);
