@@ -639,14 +639,6 @@ void MainWindow::updateTable()
             setCell(9,  h.returned == 0 ? "-" : QString::number(h.worst),    C);
             setCell(10, h.returned == 0 ? "-" : QString::number(h.last),     C);
 
-            if (auto* lossItem = m_table->item(i, 4)) {
-                QColor fg;
-                if      (loss == 0)  fg = m_darkMode ? QColor(0x4c,0xaf,0x50) : QColor(0x2e,0x7d,0x32);
-                else if (loss < 5)   fg = m_darkMode ? QColor(0xff,0xee,0x58) : QColor(0xf5,0x7f,0x17);
-                else if (loss < 20)  fg = QColor(0xff,0xa7,0x26);
-                else                 fg = QColor(0xef,0x53,0x50);
-                lossItem->setForeground(fg);
-            }
         }
     }
 }
