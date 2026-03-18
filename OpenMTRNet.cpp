@@ -369,6 +369,7 @@ int OpenMTRNet::GetMax()
     if (host[0].addr6.sin6_family == AF_INET6) {
         for (; max < MAX_HOPS && memcmp(&host[max++].addr6.sin6_addr, &last_remote_addr6, sizeof(in6_addr)););
         if (max == MAX_HOPS) {
+            // Trim trailing duplicate non-zero addresses (original logic)
             while (max > 1
                 && !memcmp(&host[max-1].addr6.sin6_addr, &host[max-2].addr6.sin6_addr, sizeof(in6_addr))
                 && (host[max-1].addr6.sin6_addr.u.Word[0] | host[max-1].addr6.sin6_addr.u.Word[1]
@@ -376,13 +377,30 @@ int OpenMTRNet::GetMax()
                   | host[max-1].addr6.sin6_addr.u.Word[4] | host[max-1].addr6.sin6_addr.u.Word[5]
                   | host[max-1].addr6.sin6_addr.u.Word[6] | host[max-1].addr6.sin6_addr.u.Word[7]))
                 --max;
+            // Trim trailing zero-address hops that have already sent packets.
+            // These are silent hops beyond the real destination — they got no
+            // reply so SetAddr6 was never called, but xmit > 0 means the thread
+            // already ran past the real route end.
+            while (max > 1
+                && !(host[max-1].addr6.sin6_addr.u.Word[0] | host[max-1].addr6.sin6_addr.u.Word[1]
+                   | host[max-1].addr6.sin6_addr.u.Word[2] | host[max-1].addr6.sin6_addr.u.Word[3]
+                   | host[max-1].addr6.sin6_addr.u.Word[4] | host[max-1].addr6.sin6_addr.u.Word[5]
+                   | host[max-1].addr6.sin6_addr.u.Word[6] | host[max-1].addr6.sin6_addr.u.Word[7])
+                && host[max-1].xmit > 0)
+                --max;
         }
     } else {
         for (; max < MAX_HOPS && host[max++].addr.sin_addr.s_addr != last_remote_addr.s_addr;);
         if (max == MAX_HOPS) {
+            // Trim trailing duplicate non-zero addresses (original logic)
             while (max > 1
                 && host[max-1].addr.sin_addr.s_addr == host[max-2].addr.sin_addr.s_addr
                 && host[max-1].addr.sin_addr.s_addr)
+                --max;
+            // Trim trailing zero-address hops that have already sent packets.
+            while (max > 1
+                && !host[max-1].addr.sin_addr.s_addr
+                && host[max-1].xmit > 0)
                 --max;
         }
     }
