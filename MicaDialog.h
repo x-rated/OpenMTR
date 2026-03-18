@@ -35,45 +35,58 @@ private:
         setModal(true);
         setFixedWidth(400);
 
+        // ── Outer frame ───────────────────────────────────────────────────
         auto* frame = new QWidget(this);
         frame->setObjectName("micaFrame");
 
-        auto* titleLabel = new QLabel(title, frame);
+        // ── Content area (title + body, padded) ───────────────────────────
+        auto* content = new QWidget(frame);
+        content->setObjectName("micaContent");
+
+        auto* titleLabel = new QLabel(title, content);
         titleLabel->setObjectName("micaTitle");
         titleLabel->setWordWrap(false);
 
-        auto* bodyLabel = new QLabel(message, frame);
+        auto* bodyLabel = new QLabel(message, content);
         bodyLabel->setObjectName("micaBody");
         bodyLabel->setWordWrap(true);
 
+        auto* contentLayout = new QVBoxLayout(content);
+        contentLayout->setContentsMargins(24, 20, 24, 20);
+        contentLayout->setSpacing(8);
+        contentLayout->addWidget(titleLabel);
+        contentLayout->addWidget(bodyLabel);
+
+        // ── Separator — zero margins so it spans full width ───────────────
         auto* sep = new QFrame(frame);
         sep->setObjectName("micaSep");
         sep->setFrameShape(QFrame::HLine);
         sep->setFrameShadow(QFrame::Plain);
         sep->setFixedHeight(1);
 
-        auto* closeBtn = new QPushButton("Close", frame);
+        // ── Footer (darker toolbar-like background) ───────────────────────
+        auto* footer = new QWidget(frame);
+        footer->setObjectName("micaFooter");
+
+        auto* closeBtn = new QPushButton("Close", footer);
         closeBtn->setObjectName("micaClose");
         closeBtn->setFixedWidth(82);
         closeBtn->setDefault(true);
         closeBtn->setAutoDefault(true);
         connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
 
-        auto* btnRow = new QHBoxLayout;
-        btnRow->setContentsMargins(0, 0, 0, 0);
+        auto* btnRow = new QHBoxLayout(footer);
+        btnRow->setContentsMargins(24, 10, 24, 12);
         btnRow->addStretch();
         btnRow->addWidget(closeBtn);
 
-        auto* inner = new QVBoxLayout(frame);
-        inner->setContentsMargins(24, 20, 24, 14);
-        inner->setSpacing(0);
-        inner->addWidget(titleLabel);
-        inner->addSpacing(8);
-        inner->addWidget(bodyLabel);
-        inner->addSpacing(20);
-        inner->addWidget(sep);
-        inner->addSpacing(10);
-        inner->addLayout(btnRow);
+        // ── Frame layout — no margins so sep stretches edge to edge ──────
+        auto* frameLayout = new QVBoxLayout(frame);
+        frameLayout->setContentsMargins(0, 0, 0, 0);
+        frameLayout->setSpacing(0);
+        frameLayout->addWidget(content);
+        frameLayout->addWidget(sep);
+        frameLayout->addWidget(footer);
 
         auto* outer = new QVBoxLayout(this);
         outer->setContentsMargins(0, 0, 0, 0);
@@ -86,6 +99,7 @@ private:
                     border: 1px solid rgba(255,255,255,0.08);
                     border-radius: 12px;
                 }
+                #micaContent { background: transparent; }
                 #micaTitle {
                     color: #ffffff;
                     font-family: "Segoe UI"; font-size: 20px; font-weight: 600;
@@ -100,7 +114,12 @@ private:
                     background-color: rgba(255,255,255,0.06);
                     border: none;
                 }
-#micaClose {
+                #micaFooter {
+                    background-color: rgba(0,0,0,0.25);
+                    border-bottom-left-radius: 12px;
+                    border-bottom-right-radius: 12px;
+                }
+                #micaClose {
                     background-color: rgba(255,255,255,0.06);
                     color: #ffffff;
                     border: 1px solid rgba(255,255,255,0.09);
@@ -118,6 +137,7 @@ private:
                     border: 1px solid rgba(0,0,0,0.08);
                     border-radius: 12px;
                 }
+                #micaContent { background: transparent; }
                 #micaTitle {
                     color: #1a1a1a;
                     font-family: "Segoe UI"; font-size: 20px; font-weight: 600;
@@ -129,10 +149,15 @@ private:
                     background: transparent;
                 }
                 #micaSep {
-                    background-color: rgba(0,0,0,0.05);
+                    background-color: rgba(0,0,0,0.06);
                     border: none;
                 }
-#micaClose {
+                #micaFooter {
+                    background-color: rgba(0,0,0,0.04);
+                    border-bottom-left-radius: 12px;
+                    border-bottom-right-radius: 12px;
+                }
+                #micaClose {
                     background-color: rgba(255,255,255,0.7);
                     color: #1a1a1a;
                     border: 1px solid rgba(0,0,0,0.14);
