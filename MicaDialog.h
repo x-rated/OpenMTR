@@ -82,7 +82,7 @@ private:
 
         // Footer padding inside the outer dialog
         auto* footerWrap = new QVBoxLayout;
-        footerWrap->setContentsMargins(16, 12, 16, 12);
+        footerWrap->setContentsMargins(25, 25, 25, 25);
         footerWrap->addLayout(btnRow);
         layout->addLayout(footerWrap);
 
