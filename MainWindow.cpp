@@ -714,3 +714,4 @@ void MainWindow::onExport()
         ts << buildTextExport();
     }
 }
+
