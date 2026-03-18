@@ -556,6 +556,17 @@ void MainWindow::onWarmupEnd()
     constexpr qint64 kWarmupDeadlineMs = 8000;
     const bool deadlineReached = m_elapsed.elapsed() >= kWarmupDeadlineMs;
 
+    // Phase 1: wait at least ECHO_REPLY_TIMEOUT ms before polling GetMax().
+    // This gives the destination thread enough time to send its first ping
+    // and receive a reply (or time out), so GetMax() has stable data.
+    constexpr qint64 kPollStartMs = 2000;
+    if (m_elapsed.elapsed() < kPollStartMs) {
+        const int gen = m_warmupGen;
+        QTimer::singleShot(250, this, [this, gen]() { if (m_warmupGen == gen) onWarmupEnd(); });
+        return;
+    }
+
+    // Phase 2: poll GetMax() — once it returns < 30 the destination is known.
     int maxHops = m_net->GetMax();
     if (maxHops >= 30 && !deadlineReached) {
         const int gen = m_warmupGen;
@@ -563,6 +574,7 @@ void MainWindow::onWarmupEnd()
         return;
     }
 
+    // Phase 3: wait for all hops up to maxHops to have sent at least one ping.
     auto state = m_net->getCurrentState();
     if (!deadlineReached) {
         for (int i = 0; i < maxHops; ++i) {
