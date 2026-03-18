@@ -220,7 +220,18 @@ public:
         if (!m_net) return state;
 
         int maxHops = m_net->GetMax();
-        int rows = (maxHops > 0 && maxHops <= MAX_HOPS) ? maxHops : MAX_HOPS;
+        int rows;
+        if (maxHops > 0 && maxHops < MAX_HOPS) {
+            // Destination found — show exactly the discovered hops
+            rows = maxHops;
+        } else {
+            // Destination not yet found — show only hops that have sent at
+            // least one packet so table grows naturally instead of 30 empty rows
+            rows = 0;
+            for (int i = 0; i < MAX_HOPS; ++i)
+                if (m_net->GetXmit(i) > 0) rows = i + 1;
+            if (rows == 0) rows = MAX_HOPS;
+        }
 
         for (int i = 0; i < rows; ++i) {
             OpenMTRHostInfo h;

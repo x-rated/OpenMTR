@@ -553,22 +553,37 @@ void MainWindow::onElapsedTimer()
 void MainWindow::onWarmupEnd()
 {
     if (!m_net) return;
-    constexpr qint64 kWarmupDeadlineMs = 30000;
-    const bool deadlineReached = m_elapsed.elapsed() >= kWarmupDeadlineMs;
+    constexpr qint64 kMinOverlayMs  = 2000;
+    constexpr qint64 kFallbackMs    = 2000;
+    const qint64     elapsed        = m_elapsed.elapsed();
 
-    // Poll GetMax() every 250ms until the destination is found (< 30).
-    // With the SetAddr6 byte-order fix this now works correctly for IPv6.
-    // Deadline of 30s covers destinations that are slow or block ICMP.
+    // Poll GetMax() from the start — dismiss as soon as destination is found,
+    // but enforce a minimum overlay time so fast routes don't flash.
+    // If GetMax() never finds the destination (ICMP blocked), fall back to
+    // showing the table after kFallbackMs and let rows grow naturally.
     int maxHops = m_net->GetMax();
-    if (maxHops >= 30 && !deadlineReached) {
+    const bool destinationFound  = maxHops < 30;
+    const bool minimumElapsed    = elapsed >= kMinOverlayMs;
+    const bool fallbackElapsed   = elapsed >= kFallbackMs;
+
+    if (!destinationFound && !fallbackElapsed) {
+        // Still discovering and fallback not reached — keep waiting
         const int gen = m_warmupGen;
         QTimer::singleShot(250, this, [this, gen]() { if (m_warmupGen == gen) onWarmupEnd(); });
         return;
     }
 
-    // Wait for all hops up to maxHops to have sent at least one ping.
+    if (destinationFound && !minimumElapsed) {
+        // Found destination but haven't shown overlay long enough yet
+        const int gen = m_warmupGen;
+        QTimer::singleShot(250, this, [this, gen]() { if (m_warmupGen == gen) onWarmupEnd(); });
+        return;
+    }
+
+    // Either destination found + minimum elapsed, or fallback elapsed.
+    // Wait for all known hops to have sent at least one ping.
     auto state = m_net->getCurrentState();
-    if (!deadlineReached) {
+    if (destinationFound) {
         for (int i = 0; i < maxHops; ++i) {
             if (state[i].xmit == 0) {
                 const int gen = m_warmupGen;
