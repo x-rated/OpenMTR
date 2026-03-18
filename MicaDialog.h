@@ -70,14 +70,19 @@ private:
         btnRow->addWidget(closeBtn);
 
         // ── Outer layout ──────────────────────────────────────────────────
+        auto* sep = new QWidget(this);
+        sep->setObjectName("micaSep");
+        sep->setFixedHeight(1);
+
         auto* layout = new QVBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(0);
         layout->addWidget(m_card);
+        layout->addWidget(sep);
 
         // Footer padding inside the outer dialog
         auto* footerWrap = new QVBoxLayout;
-        footerWrap->setContentsMargins(24, 10, 24, 14);
+        footerWrap->setContentsMargins(16, 12, 16, 12);
         footerWrap->addLayout(btnRow);
         layout->addLayout(footerWrap);
 
@@ -87,7 +92,7 @@ private:
             m_card->setStyleSheet(R"(
                 #micaCard {
                     background-color: rgba(48, 48, 54, 0.97);
-                    border-radius: 12px 12px 0 0;
+                    border-top-left-radius: 12px; border-top-right-radius: 12px; border-bottom-left-radius: 0px; border-bottom-right-radius: 0px;
                 }
                 #micaTitle {
                     color: #ffffff;
@@ -106,6 +111,7 @@ private:
                     border: 1px solid rgba(255,255,255,0.08);
                     border-radius: 12px;
                 }
+                QWidget#micaSep { background-color: rgba(255,255,255,0.12); }
                 QPushButton#micaClose {
                     background-color: rgba(255,255,255,0.06);
                     color: #ffffff;
@@ -122,7 +128,7 @@ private:
             m_card->setStyleSheet(R"(
                 #micaCard {
                     background-color: rgba(255, 255, 255, 0.98);
-                    border-radius: 12px 12px 0 0;
+                    border-top-left-radius: 12px; border-top-right-radius: 12px; border-bottom-left-radius: 0px; border-bottom-right-radius: 0px;
                 }
                 #micaTitle {
                     color: #1a1a1a;
@@ -141,6 +147,7 @@ private:
                     border: 1px solid rgba(0,0,0,0.10);
                     border-radius: 12px;
                 }
+                QWidget#micaSep { background-color: rgba(0,0,0,0.09); }
                 QPushButton#micaClose {
                     background-color: rgba(255,255,255,0.7);
                     color: #1a1a1a;
