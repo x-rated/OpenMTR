@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, fix/ipv6-discovery ]
     paths-ignore:
       - '**.md'
       - '.gitignore'
