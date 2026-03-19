@@ -15,7 +15,7 @@
 #include <string>
 
 #define MAX_HOPS        30
-#define ECHO_REPLY_TIMEOUT 5000
+#define ECHO_REPLY_TIMEOUT 1000
 
 typedef IP_OPTION_INFORMATION IPINFO, *PIPINFO, FAR* LPIPINFO;
 #ifdef _WIN64
