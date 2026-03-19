@@ -493,21 +493,30 @@ void MainWindow::onStartStop()
 
         SOCKADDR_INET addr = {};
         struct addrinfo hints = {}, *res = nullptr;
-        hints.ai_family = m_ipv6Check->isChecked() ? AF_INET6 : AF_INET;
+        // Use AF_UNSPEC to request both A and AAAA records in one query —
+        // much faster than AF_INET6 alone since the resolver handles both
+        // record types in parallel. We then pick the address matching the
+        // requested family from the results.
+        const int wantFamily = m_ipv6Check->isChecked() ? AF_INET6 : AF_INET;
+        hints.ai_family = AF_UNSPEC;
         int rc = getaddrinfo(target.toStdString().c_str(), nullptr, &hints, &res);
         if (rc != 0 || !res) {
-            m_ipv6Check->setChecked(!m_ipv6Check->isChecked());
-            hints.ai_family = m_ipv6Check->isChecked() ? AF_INET6 : AF_INET;
-            rc = getaddrinfo(target.toStdString().c_str(), nullptr, &hints, &res);
-            if (rc != 0 || !res) {
-                MicaDialog::show(this, "OpenMTR", QString("Could not resolve \"%1\".").arg(target), m_darkMode);
-                return;
-            }
+            MicaDialog::show(this, "OpenMTR", QString("Could not resolve \"%1\".").arg(target), m_darkMode);
+            return;
         }
 
+        // First pass: find exact family match
         addrinfo* match = nullptr;
         for (addrinfo* r = res; r; r = r->ai_next)
-            if (r->ai_family == hints.ai_family) { match = r; break; }
+            if (r->ai_family == wantFamily) { match = r; break; }
+
+        // Second pass: if exact family not found, auto-switch to whatever is available
+        if (!match) {
+            for (addrinfo* r = res; r; r = r->ai_next)
+                if (r->ai_family == AF_INET || r->ai_family == AF_INET6) { match = r; break; }
+            if (match) m_ipv6Check->setChecked(match->ai_family == AF_INET6);
+        }
+
         if (!match) {
             freeaddrinfo(res);
             MicaDialog::show(this, "OpenMTR", QString("Could not resolve \"%1\".").arg(target), m_darkMode);
