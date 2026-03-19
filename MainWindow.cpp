@@ -499,12 +499,7 @@ void MainWindow::onStartStop()
         // requested family from the results.
         const int wantFamily = m_ipv6Check->isChecked() ? AF_INET6 : AF_INET;
         hints.ai_family = AF_UNSPEC;
-        setWindowTitle("OpenMTR — resolving...");
-        QApplication::processEvents();
-        QElapsedTimer dnsTimer; dnsTimer.start();
         int rc = getaddrinfo(target.toStdString().c_str(), nullptr, &hints, &res);
-        setWindowTitle(QString("OpenMTR — dns: %1ms").arg(dnsTimer.elapsed()));
-        QApplication::processEvents();
         if (rc != 0 || !res) {
             MicaDialog::show(this, "OpenMTR", QString("Could not resolve \"%1\".").arg(target), m_darkMode);
             return;
