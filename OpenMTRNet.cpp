@@ -187,9 +187,9 @@ static unsigned WINAPI TraceThread(void* p)
             case IP_TTL_EXPIRED_TRANSIT:
                 wn->UpdateRTT(current->ttl - 1, icmp_echo_reply.RoundTripTime);
                 wn->AddReturned(current->ttl - 1);
-                wn->SetAddr(current->ttl - 1, icmp_echo_reply.Address);
-                break;
+                // fall through to store address
             default:
+                wn->SetAddr(current->ttl - 1, icmp_echo_reply.Address);
                 wn->SetErrorName(current->ttl - 1, icmp_echo_reply.Status);
                 break;
             }
@@ -245,9 +245,9 @@ static unsigned WINAPI TraceThread6(void* p)
             case IP_TTL_EXPIRED_TRANSIT:
                 wn->UpdateRTT(current->ttl - 1, icmpv6_echo_reply.RoundTripTime);
                 wn->AddReturned(current->ttl - 1);
-                wn->SetAddr6(current->ttl - 1, icmpv6_echo_reply.Address);
-                break;
+                // fall through to store address
             default:
+                wn->SetAddr6(current->ttl - 1, icmpv6_echo_reply.Address);
                 wn->SetErrorName(current->ttl - 1, icmpv6_echo_reply.Status);
                 break;
             }
