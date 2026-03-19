@@ -126,6 +126,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
             t->net     = this;
             t->ttl     = hops + 1;
             hThreads[hops] = (HANDLE)_beginthreadex(nullptr, 0, TraceThread6, t, 0, nullptr);
+            Sleep(5);
         }
     } else {
         host[0].addr.sin_family = AF_INET;
@@ -137,6 +138,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
             t->net     = this;
             t->ttl     = hops + 1;
             hThreads[hops] = (HANDLE)_beginthreadex(nullptr, 0, TraceThread, t, 0, nullptr);
+            Sleep(5);
         }
     }
 
