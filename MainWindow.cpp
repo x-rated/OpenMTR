@@ -597,23 +597,11 @@ void MainWindow::updateTable()
 {
     if (!m_net) return;
     auto state = m_net->getCurrentState();
-
-    // Count visible rows — skip trailing hops with no address and no replies.
-    // This avoids showing 30 empty rows when the destination blocks ICMP.
-    // Hops in the middle of the route that are silent still show as rows
-    // because they have responding hops after them.
-    int rows = 0;
-    for (int i = 0; i < (int)state.size(); ++i) {
-        const auto& h = state[i];
-        bool hasAddr  = (h.addr.si_family != AF_UNSPEC);
-        bool hasData  = (h.returned > 0);
-        if (hasAddr || hasData) rows = i + 1;
-    }
-    if (rows == 0 && !state.empty()) rows = 1;
+    int rows = static_cast<int>(state.size());
     m_table->setRowCount(rows);
 
     for (int i = 0; i < rows; ++i) {
-        const auto& h   = state[i];
+        const auto& h = state[i];
         QString ip      = QString::fromStdWString(addr_to_wstring(h.addr));
         bool hasAddr    = (h.addr.si_family != AF_UNSPEC);
         QString name    = hasAddr ? QString::fromStdWString(h.getName()) : "?";
