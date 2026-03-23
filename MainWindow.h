@@ -28,6 +28,7 @@
 #include <stop_token>
 #include <unordered_map>
 #include <string>
+#include <thread>
 
 class MainWindow : public QMainWindow, public IOpenMTROptionsProvider
 {

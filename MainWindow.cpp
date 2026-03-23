@@ -484,63 +484,85 @@ void MainWindow::onStartStop()
         QString target = m_targetEdit->text().trimmed();
         if (target.isEmpty()) return;
 
-        // Create fresh wrapper for each trace
-        m_net = std::make_shared<OpenMTRNetWrapper>(this);
-
-        SOCKADDR_INET addr = {};
-        struct addrinfo hints = {}, *res = nullptr;
-        // Use AF_UNSPEC to request both A and AAAA records in one query —
-        // much faster than AF_INET6 alone since the resolver handles both
-        // record types in parallel. We then pick the address matching the
-        // requested family from the results.
-        const int wantFamily = m_ipv6Check->isChecked() ? AF_INET6 : AF_INET;
-        hints.ai_family = AF_UNSPEC;
-        int rc = getaddrinfo(target.toStdString().c_str(), nullptr, &hints, &res);
-        if (rc != 0 || !res) {
-            MicaDialog::show(this, "OpenMTR", QString("Could not resolve \"%1\".").arg(target), m_darkMode);
-            return;
-        }
-
-        // First pass: find exact family match
-        addrinfo* match = nullptr;
-        for (addrinfo* r = res; r; r = r->ai_next)
-            if (r->ai_family == wantFamily) { match = r; break; }
-
-        // Second pass: if exact family not found, auto-switch to whatever is available
-        if (!match) {
-            for (addrinfo* r = res; r; r = r->ai_next)
-                if (r->ai_family == AF_INET || r->ai_family == AF_INET6) { match = r; break; }
-            if (match) m_ipv6Check->setChecked(match->ai_family == AF_INET6);
-        }
-
-        if (!match) {
-            freeaddrinfo(res);
-            MicaDialog::show(this, "OpenMTR", QString("Could not resolve \"%1\".").arg(target), m_darkMode);
-            return;
-        }
-        memcpy(&addr, match->ai_addr,
-            match->ai_addrlen < sizeof(addr) ? match->ai_addrlen : sizeof(addr));
-        freeaddrinfo(res);
-
-        m_tracing  = true;
-        m_counting = false;
-        m_table->setRowCount(0);
-        m_stack->setCurrentIndex(1);
-        m_copyBtn->setEnabled(false);
-        m_exportBtn->setEnabled(false);
-        m_startStopBtn->setText("Stop");
-        m_startStopBtn->setProperty("tracing", true);
-        m_startStopBtn->style()->polish(m_startStopBtn);
+        // Disable inputs immediately so UI stays responsive during async DNS
+        m_startStopBtn->setEnabled(false);
         m_targetEdit->setEnabled(false);
         m_ipv6Check->setEnabled(false);
         m_pingSizeBox->setEnabled(false);
 
-        [[maybe_unused]] auto trace = m_net->DoTrace(m_stopSource.get_token(), addr);
-        m_refreshTimer->start();
-        m_elapsedTimer->start();
-        m_warmupTimer->start();
-        m_elapsed.start();
-        ++m_warmupGen;
+        const int wantFamily = m_ipv6Check->isChecked() ? AF_INET6 : AF_INET;
+        const bool darkMode  = m_darkMode;
+
+        // Resolve DNS on a background thread — keeps UI fully responsive
+        QPointer<MainWindow> self(this);
+        std::thread([self, target, wantFamily, darkMode]() {
+            struct addrinfo hints = {}, *res = nullptr;
+            hints.ai_family = AF_UNSPEC;
+            int rc = getaddrinfo(target.toStdString().c_str(), nullptr, &hints, &res);
+
+            SOCKADDR_INET addr = {};
+            bool resolved = false;
+            bool ipv6 = (wantFamily == AF_INET6);
+
+            if (rc == 0 && res) {
+                // First pass: exact family match
+                addrinfo* match = nullptr;
+                for (addrinfo* r = res; r; r = r->ai_next)
+                    if (r->ai_family == wantFamily) { match = r; break; }
+
+                // Second pass: auto-fallback
+                if (!match) {
+                    for (addrinfo* r = res; r; r = r->ai_next)
+                        if (r->ai_family == AF_INET || r->ai_family == AF_INET6) { match = r; break; }
+                }
+
+                if (match) {
+                    memcpy(&addr, match->ai_addr,
+                        match->ai_addrlen < sizeof(addr) ? match->ai_addrlen : sizeof(addr));
+                    ipv6 = (match->ai_family == AF_INET6);
+                    resolved = true;
+                }
+                freeaddrinfo(res);
+            }
+
+            // Dispatch result back to UI thread
+            QMetaObject::invokeMethod(self, [self, target, addr, resolved, ipv6, darkMode]() {
+                if (!self) return;
+
+                // Re-enable inputs if resolution failed or window was closed
+                if (!resolved) {
+                    self->m_startStopBtn->setEnabled(true);
+                    self->m_targetEdit->setEnabled(true);
+                    self->m_ipv6Check->setEnabled(true);
+                    self->m_pingSizeBox->setEnabled(true);
+                    MicaDialog::show(self, "OpenMTR", QString("Could not resolve \"%1\".").arg(target), darkMode);
+                    return;
+                }
+
+                // Update IPv6 checkbox if family changed
+                self->m_ipv6Check->setChecked(ipv6);
+
+                // Start the trace
+                self->m_net = std::make_shared<OpenMTRNetWrapper>(self);
+                self->m_tracing  = true;
+                self->m_counting = false;
+                self->m_table->setRowCount(0);
+                self->m_stack->setCurrentIndex(1);
+                self->m_copyBtn->setEnabled(false);
+                self->m_exportBtn->setEnabled(false);
+                self->m_startStopBtn->setText("Stop");
+                self->m_startStopBtn->setProperty("tracing", true);
+                self->m_startStopBtn->style()->polish(self->m_startStopBtn);
+                self->m_startStopBtn->setEnabled(true);
+
+                [[maybe_unused]] auto trace = self->m_net->DoTrace(self->m_stopSource.get_token(), addr);
+                self->m_refreshTimer->start();
+                self->m_elapsedTimer->start();
+                self->m_warmupTimer->start();
+                self->m_elapsed.start();
+                ++self->m_warmupGen;
+            }, Qt::QueuedConnection);
+        }).detach();
     }
 }
 
