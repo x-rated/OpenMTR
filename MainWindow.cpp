@@ -493,9 +493,12 @@ void MainWindow::onStartStop()
         const int wantFamily = m_ipv6Check->isChecked() ? AF_INET6 : AF_INET;
         const bool darkMode  = m_darkMode;
 
-        // Resolve DNS on a background thread — keeps UI fully responsive
+        // Resolve DNS and init network engine on background thread — keeps UI fully responsive
         QPointer<MainWindow> self(this);
-        std::thread([self, target, wantFamily, darkMode]() {
+        IOpenMTROptionsProvider* provider = this;
+        std::thread([self, provider, target, wantFamily, darkMode]() {
+            // Create network wrapper here too — LoadLibrary/IcmpCreateFile can be slow on first run
+            auto net = std::make_shared<OpenMTRNetWrapper>(provider);
             struct addrinfo hints = {}, *res = nullptr;
             hints.ai_family = AF_UNSPEC;
             int rc = getaddrinfo(target.toStdString().c_str(), nullptr, &hints, &res);
@@ -526,7 +529,7 @@ void MainWindow::onStartStop()
             }
 
             // Dispatch result back to UI thread
-            QMetaObject::invokeMethod(self, [self, target, addr, resolved, ipv6, darkMode]() {
+            QMetaObject::invokeMethod(self, [self, target, addr, resolved, ipv6, darkMode, net]() {
                 if (!self) return;
 
                 // Re-enable inputs if resolution failed or window was closed
@@ -543,7 +546,7 @@ void MainWindow::onStartStop()
                 self->m_ipv6Check->setChecked(ipv6);
 
                 // Start the trace
-                self->m_net = std::make_shared<OpenMTRNetWrapper>(self);
+                self->m_net = net;
                 self->m_tracing  = true;
                 self->m_counting = false;
                 self->m_table->setRowCount(0);
