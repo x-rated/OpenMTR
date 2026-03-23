@@ -436,7 +436,7 @@ QString MainWindow::getCachedASN(const QString& ip, bool ipv6) const
     auto it  = m_asnCache.find(key);
     if (it != m_asnCache.end()) return it->second.isEmpty() ? "-" : it->second;
 
-    // Not cached — mark as pending and fire background lookup
+    // Fire background lookup — return "-" until result arrives
     if (m_asnPending.insert(key).second) {
         QPointer<MainWindow> self(const_cast<MainWindow*>(this));
         std::thread([self, ip, ipv6, key]() {
@@ -496,7 +496,7 @@ void MainWindow::onStartStop()
         QString target = m_targetEdit->text().trimmed();
         if (target.isEmpty()) return;
 
-        // Disable UI immediately — keeps window responsive during async DNS + init
+        // Disable UI immediately so window stays responsive during async init
         m_startStopBtn->setEnabled(false);
         m_targetEdit->setEnabled(false);
         m_ipv6Check->setEnabled(false);
@@ -507,68 +507,65 @@ void MainWindow::onStartStop()
         IOpenMTROptionsProvider* provider = this;
         QPointer<MainWindow> self(this);
 
-        // Yield to event loop first so UI repaints as responsive before thread starts
+        // Yield to event loop so UI repaints before thread starts
         QTimer::singleShot(0, this, [self, provider, target, wantFamily, darkMode]() {
             if (!self) return;
             std::thread([self, provider, target, wantFamily, darkMode]() {
+                // Init engine (LoadLibrary + IcmpCreateFile) off UI thread
+                auto net = std::make_shared<OpenMTRNetWrapper>(provider);
 
-            // 1. Init network engine (LoadLibrary + IcmpCreateFile — slow on first run)
-            auto net = std::make_shared<OpenMTRNetWrapper>(provider);
+                // Resolve DNS off UI thread
+                struct addrinfo hints = {}, *res = nullptr;
+                hints.ai_family = AF_UNSPEC;
+                bool resolved = false;
+                bool ipv6 = (wantFamily == AF_INET6);
+                SOCKADDR_INET addr = {};
 
-            // 2. Resolve DNS
-            struct addrinfo hints = {}, *res = nullptr;
-            hints.ai_family = AF_UNSPEC;
-            bool resolved = false;
-            bool ipv6 = (wantFamily == AF_INET6);
-            SOCKADDR_INET addr = {};
-
-            if (getaddrinfo(target.toStdString().c_str(), nullptr, &hints, &res) == 0 && res) {
-                addrinfo* match = nullptr;
-                for (addrinfo* r = res; r; r = r->ai_next)
-                    if (r->ai_family == wantFamily) { match = r; break; }
-                if (!match) {
+                if (getaddrinfo(target.toStdString().c_str(), nullptr, &hints, &res) == 0 && res) {
+                    addrinfo* match = nullptr;
                     for (addrinfo* r = res; r; r = r->ai_next)
-                        if (r->ai_family == AF_INET || r->ai_family == AF_INET6) { match = r; break; }
+                        if (r->ai_family == wantFamily) { match = r; break; }
+                    if (!match)
+                        for (addrinfo* r = res; r; r = r->ai_next)
+                            if (r->ai_family == AF_INET || r->ai_family == AF_INET6) { match = r; break; }
+                    if (match) {
+                        memcpy(&addr, match->ai_addr,
+                            match->ai_addrlen < sizeof(addr) ? match->ai_addrlen : sizeof(addr));
+                        ipv6 = (match->ai_family == AF_INET6);
+                        resolved = true;
+                    }
+                    freeaddrinfo(res);
                 }
-                if (match) {
-                    memcpy(&addr, match->ai_addr,
-                        match->ai_addrlen < sizeof(addr) ? match->ai_addrlen : sizeof(addr));
-                    ipv6 = (match->ai_family == AF_INET6);
-                    resolved = true;
-                }
-                freeaddrinfo(res);
-            }
 
-            // 3. Back to UI thread
-            QMetaObject::invokeMethod(qApp, [self, net, target, addr, resolved, ipv6, darkMode]() {
-                if (!self) return;
-                if (!resolved) {
+                QMetaObject::invokeMethod(qApp, [self, net, target, addr, resolved, ipv6, darkMode]() {
+                    if (!self) return;
+                    if (!resolved) {
+                        self->m_startStopBtn->setEnabled(true);
+                        self->m_targetEdit->setEnabled(true);
+                        self->m_ipv6Check->setEnabled(true);
+                        self->m_pingSizeBox->setEnabled(true);
+                        MicaDialog::show(self, "OpenMTR", QString("Could not resolve \"%1\".").arg(target), darkMode);
+                        return;
+                    }
+                    self->m_ipv6Check->setChecked(ipv6);
+                    self->m_net      = net;
+                    self->m_tracing  = true;
+                    self->m_counting = false;
+                    self->m_table->setRowCount(0);
+                    self->m_stack->setCurrentIndex(1);
+                    self->m_copyBtn->setEnabled(false);
+                    self->m_exportBtn->setEnabled(false);
+                    self->m_startStopBtn->setText("Stop");
+                    self->m_startStopBtn->setProperty("tracing", true);
+                    self->m_startStopBtn->style()->polish(self->m_startStopBtn);
                     self->m_startStopBtn->setEnabled(true);
-                    self->m_targetEdit->setEnabled(true);
-                    self->m_ipv6Check->setEnabled(true);
-                    self->m_pingSizeBox->setEnabled(true);
-                    MicaDialog::show(self, "OpenMTR", QString("Could not resolve \"%1\".").arg(target), darkMode);
-                    return;
-                }
-                self->m_ipv6Check->setChecked(ipv6);
-                self->m_net      = net;
-                self->m_tracing  = true;
-                self->m_counting = false;
-                self->m_table->setRowCount(0);
-                self->m_stack->setCurrentIndex(1);
-                self->m_copyBtn->setEnabled(false);
-                self->m_exportBtn->setEnabled(false);
-                self->m_startStopBtn->setText("Stop");
-                self->m_startStopBtn->setProperty("tracing", true);
-                self->m_startStopBtn->style()->polish(self->m_startStopBtn);
-                self->m_startStopBtn->setEnabled(true);
-                [[maybe_unused]] auto trace = self->m_net->DoTrace(self->m_stopSource.get_token(), addr);
-                self->m_refreshTimer->start();
-                self->m_elapsedTimer->start();
-                self->m_warmupTimer->start();
-                self->m_elapsed.start();
-                ++self->m_warmupGen;
-            }, Qt::QueuedConnection);
+                    [[maybe_unused]] auto trace = self->m_net->DoTrace(self->m_stopSource.get_token(), addr);
+                    self->m_refreshTimer->start();
+                    self->m_elapsedTimer->start();
+                    self->m_warmupTimer->start();
+                    self->m_elapsed.start();
+                    ++self->m_warmupGen;
+                }, Qt::QueuedConnection);
             }).detach();
         });
     }
@@ -615,21 +612,42 @@ void MainWindow::onWarmupEnd()
         }
     }
 
+    // Prefetch ASNs for all known hops during the 1100ms wait
+    {
+        auto st = m_net->getCurrentState();
+        for (auto& h : st)
+            if (h.addr.si_family != AF_UNSPEC)
+                getCachedASN(QString::fromStdWString(addr_to_wstring(h.addr)),
+                             h.addr.si_family == AF_INET6);
+    }
+
     const int gen = m_warmupGen;
+    // After 1100ms, poll until all ASN lookups complete (or 4s extra timeout)
     QTimer::singleShot(1100, this, [this, gen]() {
         if (!m_net || !m_tracing || m_warmupGen != gen) return;
-        auto st = m_net->getCurrentState();
-        m_baseline.clear();
-        m_asnCache.clear();
-        m_asnPending.clear();
-        for (auto& h : st)
-            m_baseline.push_back({h.xmit, h.returned});
-        m_counting = true;
-        m_elapsed.restart();
-        m_stack->setCurrentIndex(2);
-        m_copyBtn->setEnabled(true);
-        m_exportBtn->setEnabled(true);
-        updateTable();
+        auto* pollAsn = new QTimer(this);
+        pollAsn->setInterval(150);
+        connect(pollAsn, &QTimer::timeout, this, [this, gen, pollAsn]() {
+            if (!m_net || !m_tracing || m_warmupGen != gen) {
+                pollAsn->stop(); pollAsn->deleteLater(); return;
+            }
+            // Wait for pending ASNs, but cap at 4s extra
+            if (!m_asnPending.empty() && m_elapsed.elapsed() < 12000) return;
+            pollAsn->stop(); pollAsn->deleteLater();
+            auto st = m_net->getCurrentState();
+            m_baseline.clear();
+            m_asnCache.clear();
+            m_asnPending.clear();
+            for (auto& h : st)
+                m_baseline.push_back({h.xmit, h.returned});
+            m_counting = true;
+            m_elapsed.restart();
+            m_stack->setCurrentIndex(2);
+            m_copyBtn->setEnabled(true);
+            m_exportBtn->setEnabled(true);
+            updateTable();
+        });
+        pollAsn->start();
     });
 }
 
