@@ -495,8 +495,10 @@ void MainWindow::onStartStop()
         IOpenMTROptionsProvider* provider = this;
         QPointer<MainWindow> self(this);
 
-        // All slow work (DNS + LoadLibrary + IcmpCreateFile) on background thread
-        std::thread([self, provider, target, wantFamily, darkMode]() {
+        // Yield to event loop first so UI repaints as responsive before thread starts
+        QTimer::singleShot(0, this, [self, provider, target, wantFamily, darkMode]() {
+            if (!self) return;
+            std::thread([self, provider, target, wantFamily, darkMode]() {
 
             // 1. Init network engine (LoadLibrary + IcmpCreateFile — slow on first run)
             auto net = std::make_shared<OpenMTRNetWrapper>(provider);
@@ -555,7 +557,8 @@ void MainWindow::onStartStop()
                 self->m_elapsed.start();
                 ++self->m_warmupGen;
             }, Qt::QueuedConnection);
-        }).detach();
+            }).detach();
+        });
     }
 }
 
