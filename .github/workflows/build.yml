@@ -2,13 +2,13 @@ name: Build
 
 on:
   push:
-    branches: [ main, fix/async-dns ]
+    branches: [ main ]
     paths-ignore:
       - '**.md'
       - '.gitignore'
       - 'LICENSE'
   pull_request:
-    branches: [ main, fix/async-dns ]
+    branches: [ main ]
 
 jobs:
   build:
