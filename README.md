@@ -58,6 +58,13 @@ Date    : 2026-03-20 00:28:43
 - **Instant close** — the app exits immediately at any time; background threads are stopped asynchronously without blocking the UI
 - **HiDPI aware** — Per-Monitor V2 DPI aware for crisp rendering on high-DPI and mixed-DPI setups
 
+<br>
+
+> [!WARNING]
+> **OpenMTR is not code signed.** Free signing services ([SignPath Foundation](https://signpath.org) and [OSSign](https://ossign.org)) require a minimum project history of 6 months before accepting new projects.
+>
+> As a result, some antivirus engines may flag the executable as suspicious due to [Enigma Virtual Box](https://enigmaprotector.com/en/aboutvb.html) packing, which is used to bundle Qt6 runtime DLLs into a single portable executable. This is a false positive — the source code is fully available for review at this repository, and the build is fully reproducible via the [GitHub Actions workflow](.github/workflows/build.yml).
+
 ---
 
 ## Requirements
