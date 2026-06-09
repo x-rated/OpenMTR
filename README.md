@@ -50,7 +50,7 @@ Date    : 2026-03-20 00:28:43
 - **Per-hop statistics** — ASN, hostname, IP address, packet loss, sent/received counts, best/avg/worst/last latency
 - **ASN lookup** — Autonomous System Numbers resolved automatically via Team Cymru's DNS service
 - **IPv4 & IPv6** — full dual-stack support with auto-fallback if the target can't be resolved with the chosen protocol
-- **Configurable ping size** — adjust ICMP payload from 64 to 8192 bytes
+- **Configurable ping size** — adjust ICMP payload from 64 to 65500 bytes
 - **Light & dark themes** — switches instantly; Windows 11 title bar follows your choice via the native DWM API; auto-detects system theme on launch
 - **Export & copy** — save results as `.txt` or `.csv`, or copy the full report to clipboard; double-click any cell to copy its value; exported text adapts column widths to actual content
 - **Smart column sizing** — Hostname and IP columns dynamically share available space based on content width
@@ -70,14 +70,14 @@ Date    : 2026-03-20 00:28:43
 ## Requirements
 
 - Windows 10 22H2+ (Windows 11 recommended for full Mica/DWM effects)
-- Qt 6.11+ with `msvc2022_64` kit
+- Qt 6.11.1+ with `msvc2022_64` kit
 - Visual Studio 2022 with C++20 support
 
 ---
 
 ## Building
 
-1. Install [Qt 6.11+](https://www.qt.io/download) with the `msvc2022_64` component
+1. Install [Qt 6.11.1+](https://www.qt.io/download) with the `msvc2022_64` component
 2. If not using the `QT_ROOT_DIR` environment variable, update `QtDir` in `OpenMTR.vcxproj` to match your Qt installation path
 3. Open `OpenMTR.sln` in Visual Studio 2022
 4. Build → **Release x64**

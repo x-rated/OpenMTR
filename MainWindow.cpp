@@ -103,7 +103,7 @@ void MainWindow::setupUi()
     connect(m_targetEdit, &QLineEdit::returnPressed, this, &MainWindow::onStartStop);
 
     auto* targetWrap = new QWidget(this);
-    targetWrap->setFixedWidth(220); targetWrap->setFixedHeight(32);
+    targetWrap->setFixedWidth(330); targetWrap->setFixedHeight(32);
     auto* targetWrapOuter = new QVBoxLayout(targetWrap);
     targetWrapOuter->setContentsMargins(0,0,0,0); targetWrapOuter->setSpacing(0);
     auto* targetInner = new QWidget(targetWrap);
@@ -125,8 +125,8 @@ void MainWindow::setupUi()
 
     m_pingSizeBox = new QSpinBox(this);
     m_pingSizeBox->setObjectName("pingSizeBox");
-    m_pingSizeBox->setRange(64, 8192); m_pingSizeBox->setValue(64);
-    m_pingSizeBox->setFixedWidth(70);
+    m_pingSizeBox->setRange(64, 65500); m_pingSizeBox->setValue(64);
+    m_pingSizeBox->setFixedWidth(80);
     m_pingSizeBox->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_pingSizeBox->setFrame(false); m_pingSizeBox->setMinimumHeight(30);
     m_pingSizeBox->setContextMenuPolicy(Qt::NoContextMenu);
