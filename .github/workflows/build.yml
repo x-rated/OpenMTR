@@ -145,8 +145,12 @@ jobs:
       - name: Deploy Qt DLLs ARM64
         shell: pwsh
         run: |
-          $windeployqt = "$env:QT_ROOT_DIR\bin\windeployqt6.exe"
-          & $windeployqt --release --no-translations --no-system-d3d-compiler bin\ARM64\Release\OpenMTR.exe
+          $qtBase = (Get-ChildItem "$env:RUNNER_TEMP", "D:\a\OpenMTR" -Directory -Filter "Qt" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          $qtAmd64 = (Get-ChildItem $qtBase -Recurse -Directory | Where-Object { $_.Name -eq "msvc2022_64" } | Select-Object -First 1).FullName
+          $qtArm64 = (Get-ChildItem $qtBase -Recurse -Directory | Where-Object { $_.Name -like "msvc2022_arm64*" } | Select-Object -First 1).FullName
+          # windeployqt from AMD64 kit, --qtpaths from ARM64 kit
+          $windeployqt = "$qtAmd64\bin\windeployqt6.exe"
+          & $windeployqt --release --no-translations --no-system-d3d-compiler --qtpaths "$qtArm64\bin\qtpaths.bat" bin\ARM64\Release\OpenMTR.exe
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
