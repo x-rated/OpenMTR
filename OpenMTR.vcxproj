@@ -69,9 +69,9 @@
   <PropertyGroup>
     <QtDir Condition="'$(QT_ROOT_DIR)'!=''">$(QT_ROOT_DIR)</QtDir>
     <QtDir Condition="'$(QT_ROOT_DIR)'==''">C:\Qt\6.11.1\msvc2022_64</QtDir>
-    <!-- QtHostDir always points to AMD64 kit for host tools (moc, rcc) -->
-    <QtHostDir Condition="'$(QT_HOST_DIR)'!=''">$(QT_HOST_DIR)</QtHostDir>
-    <QtHostDir Condition="'$(QT_HOST_DIR)'==''">$(QtDir)</QtHostDir>
+    <!-- Host tools dir: for ARM64 cross-compile, moc/rcc must come from AMD64 kit -->
+    <QtHostDir Condition="'$(Platform)'=='ARM64' and '$(QT_HOST_DIR)'!=''">$(QT_HOST_DIR)</QtHostDir>
+    <QtHostDir Condition="'$(Platform)'!='ARM64' or '$(QT_HOST_DIR)'==''">$(QtDir)</QtHostDir>
   </PropertyGroup>
 
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
