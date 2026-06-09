@@ -150,7 +150,12 @@ jobs:
           $qtArm64 = (Get-ChildItem $qtBase -Recurse -Directory | Where-Object { $_.Name -like "msvc2022_arm64*" } | Select-Object -First 1).FullName
           # windeployqt from AMD64 kit, --qtpaths from ARM64 kit
           $windeployqt = "$qtAmd64\bin\windeployqt6.exe"
-          & $windeployqt --release --no-translations --no-system-d3d-compiler --qtpaths "$qtArm64\bin\qtpaths.bat" bin\ARM64\Release\OpenMTR.exe
+          # Try qtpaths6.exe first, fall back to qtpaths.bat
+          $qtpaths = if (Test-Path "$qtArm64\bin\qtpaths6.exe") { "$qtArm64\bin\qtpaths6.exe" } `
+                     elseif (Test-Path "$qtArm64\bin\qtpaths.bat") { "$qtArm64\bin\qtpaths.bat" } `
+                     else { "$qtArm64\bin\qtpaths.exe" }
+          Write-Host "qtpaths: $qtpaths"
+          & $windeployqt --release --no-translations --no-system-d3d-compiler --qtpaths $qtpaths bin\ARM64\Release\OpenMTR.exe
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
