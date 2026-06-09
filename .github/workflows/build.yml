@@ -20,7 +20,7 @@ jobs:
       - name: Install Qt6
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.11.0'
+          version: '6.11.1'
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2022_64'
@@ -36,7 +36,7 @@ jobs:
           $qtDir = $env:QT_ROOT_DIR
           Write-Host "Qt root dir: $qtDir"
           (Get-Content OpenMTR.vcxproj) `
-            -replace 'C:\\Qt\\6\.11\.0\\msvc2022_64', $qtDir `
+            -replace 'C:\\Qt\\6\.11\.1\\msvc2022_64', $qtDir `
             | Set-Content OpenMTR.vcxproj
 
       - name: Build Release
@@ -51,7 +51,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '26'
 
       - name: Cache node_modules
         uses: actions/cache@v4
@@ -69,14 +69,96 @@ jobs:
         shell: pwsh
         run: Get-Item OpenMTR.exe | Select-Object Name, @{N='MB';E={[math]::Round($_.Length/1MB,2)}}
 
-      - name: Upload single exe
+      - name: Rename AMD64 exe
+        shell: pwsh
+        run: Rename-Item OpenMTR.exe OpenMTR-AMD64.exe
+
+      - name: Upload AMD64 exe
         uses: actions/upload-artifact@v4
         with:
-          name: OpenMTR-x64
-          path: OpenMTR.exe
+          name: OpenMTR-AMD64
+          path: OpenMTR-AMD64.exe
+
+  build-arm64:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt6 AMD64 (windeployqt + cross tools)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.11.1'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+          cache: true
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@refs/pull/1000/head'
+
+      - name: Install Qt6 ARM64 (libraries)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.11.1'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_arm64'
+          cache: true
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@refs/pull/1000/head'
+
+      - name: Setup MSVC
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Update Qt path in project for ARM64
+        shell: pwsh
+        run: |
+          $qtArm64 = "$env:RUNNER_TEMP\Qt\6.11.1\msvc2022_arm64"
+          if (!(Test-Path $qtArm64)) {
+            $qtArm64 = (Get-ChildItem "$env:RUNNER_TEMP\Qt\6.11.1" -Directory | Where-Object { $_.Name -like "*arm64*" } | Select-Object -First 1).FullName
+          }
+          Write-Host "Qt ARM64 dir: $qtArm64"
+          (Get-Content OpenMTR.vcxproj) `
+            -replace 'C:\\Qt\\6\.11\.1\\msvc2022_64', $qtArm64 `
+            | Set-Content OpenMTR.vcxproj
+
+      - name: Build Release ARM64
+        run: msbuild OpenMTR.sln /p:Configuration=Release /p:Platform=ARM64 /m
+
+      - name: Deploy Qt DLLs ARM64
+        shell: pwsh
+        run: |
+          $windeployqt = "$env:QT_ROOT_DIR\bin\windeployqt6.exe"
+          & $windeployqt --release --no-translations --no-system-d3d-compiler bin\ARM64\Release\OpenMTR.exe
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: npm-evb-v1
+
+      - name: Install EVB tools
+        run: npm install enigmavirtualbox generate-evb
+
+      - name: Pack single exe ARM64
+        run: node .github/workflows/pack.js bin\ARM64\Release OpenMTR.exe
+
+      - name: Rename ARM64 exe
+        shell: pwsh
+        run: Rename-Item OpenMTR.exe OpenMTR-ARM64.exe
+
+      - name: Upload ARM64 exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenMTR-ARM64
+          path: OpenMTR-ARM64.exe
+
 
   release:
-    needs: build
+    needs: [build, build-arm64]
     runs-on: windows-latest
     if: startsWith(github.ref, 'refs/tags/v')
 
@@ -89,7 +171,7 @@ jobs:
       - name: Install Qt6
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.11.0'
+          version: '6.11.1'
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2022_64'
@@ -104,7 +186,7 @@ jobs:
         run: |
           $qtDir = $env:QT_ROOT_DIR
           (Get-Content OpenMTR.vcxproj) `
-            -replace 'C:\\Qt\\6\.11\.0\\msvc2022_64', $qtDir `
+            -replace 'C:\\Qt\\6\.11\.1\\msvc2022_64', $qtDir `
             | Set-Content OpenMTR.vcxproj
 
       - name: Build Release
@@ -119,7 +201,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '26'
 
       - name: Cache node_modules
         uses: actions/cache@v4
@@ -133,8 +215,19 @@ jobs:
       - name: Pack single exe
         run: node .github/workflows/pack.js bin\x64\Release OpenMTR.exe
 
+      - name: Rename AMD64 exe
+        shell: pwsh
+        run: Rename-Item OpenMTR.exe OpenMTR-AMD64.exe
+
+      - name: Download ARM64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: OpenMTR-ARM64
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: OpenMTR.exe
+          files: |
+            OpenMTR-AMD64.exe
+            OpenMTR-ARM64.exe
           generate_release_notes: true
