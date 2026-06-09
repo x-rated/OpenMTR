@@ -98,7 +98,7 @@ jobs:
       - name: Install Qt6 ARM64 (libraries)
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.11.1'
+          version: '6.11.0'
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2022_arm64'
@@ -111,10 +111,7 @@ jobs:
       - name: Update Qt path in project for ARM64
         shell: pwsh
         run: |
-          $qtArm64 = "$env:RUNNER_TEMP\Qt\6.11.1\msvc2022_arm64"
-          if (!(Test-Path $qtArm64)) {
-            $qtArm64 = (Get-ChildItem "$env:RUNNER_TEMP\Qt\6.11.1" -Directory | Where-Object { $_.Name -like "*arm64*" } | Select-Object -First 1).FullName
-          }
+          $qtArm64 = (Get-ChildItem "$env:RUNNER_TEMP\Qt" -Recurse -Directory | Where-Object { $_.Name -like "msvc2022_arm64" } | Select-Object -First 1).FullName
           Write-Host "Qt ARM64 dir: $qtArm64"
           (Get-Content OpenMTR.vcxproj) `
             -replace 'C:\\Qt\\6\.11\.1\\msvc2022_64', $qtArm64 `
