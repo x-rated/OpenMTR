@@ -111,17 +111,17 @@ jobs:
       - name: Update Qt path in project for ARM64
         shell: pwsh
         run: |
-          # QT_ROOT_DIR = AMD64 (installed last) — used as host tools
-          $qtAmd64 = $env:QT_ROOT_DIR
-          $qtArm64 = (Get-ChildItem "$env:RUNNER_TEMP\Qt" -Recurse -Directory | Where-Object { $_.Name -like "msvc2022_arm64*" } | Select-Object -First 1).FullName
-          Write-Host "Qt AMD64 (host): $qtAmd64"
+          # Find both Qt kits explicitly
+          $qtBase = (Get-ChildItem "$env:RUNNER_TEMP", "D:\a\OpenMTR" -Directory -Filter "Qt" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          Write-Host "Qt base: $qtBase"
+          $qtArm64 = (Get-ChildItem $qtBase -Recurse -Directory | Where-Object { $_.Name -like "msvc2022_arm64*" } | Select-Object -First 1).FullName
           Write-Host "Qt ARM64 (target): $qtArm64"
           # Set ARM64 as target Qt (libraries, includes)
           (Get-Content OpenMTR.vcxproj) `
             -replace 'C:\\Qt\\6\.11\.1\\msvc2022_64', $qtArm64 `
             | Set-Content OpenMTR.vcxproj
-          # Pass AMD64 path as QT_HOST_DIR so vcxproj uses it for moc/rcc
-          echo "QT_HOST_DIR=$qtAmd64" >> $env:GITHUB_ENV
+          # Store ARM64 path for use in build step
+          echo "QT_ARM64_DIR=$qtArm64" >> $env:GITHUB_ENV
 
       - name: Debug Qt paths and env
         shell: pwsh
@@ -135,7 +135,12 @@ jobs:
           if (Test-Path $mocPath) { & $mocPath --version }
 
       - name: Build Release ARM64
-        run: msbuild OpenMTR.sln /p:Configuration=Release /p:Platform=ARM64 /m
+        shell: pwsh
+        run: |
+          $qtBase = (Get-ChildItem "$env:RUNNER_TEMP", "D:\a\OpenMTR" -Directory -Filter "Qt" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          $qtAmd64 = (Get-ChildItem $qtBase -Recurse -Directory | Where-Object { $_.Name -eq "msvc2022_64" } | Select-Object -First 1).FullName
+          Write-Host "Qt AMD64 host tools: $qtAmd64"
+          msbuild OpenMTR.sln /p:Configuration=Release /p:Platform=ARM64 /p:QT_HOST_DIR="$qtAmd64" /m
 
       - name: Deploy Qt DLLs ARM64
         shell: pwsh
