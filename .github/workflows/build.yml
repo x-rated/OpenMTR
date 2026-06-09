@@ -123,9 +123,16 @@ jobs:
           # Pass AMD64 path as QT_HOST_DIR so vcxproj uses it for moc/rcc
           echo "QT_HOST_DIR=$qtAmd64" >> $env:GITHUB_ENV
 
-      - name: Debug vcxproj moc path
+      - name: Debug Qt paths and env
         shell: pwsh
-        run: Get-Content OpenMTR.vcxproj | Select-String "moc|rcc|QtDir|QtHost"
+        run: |
+          Write-Host "QT_ROOT_DIR=$env:QT_ROOT_DIR"
+          Write-Host "QT_HOST_DIR=$env:QT_HOST_DIR"
+          # Test which moc.exe would actually run
+          $mocPath = "$env:QT_HOST_DIR\bin\moc.exe"
+          Write-Host "moc path: $mocPath"
+          Write-Host "moc exists: $(Test-Path $mocPath)"
+          if (Test-Path $mocPath) { & $mocPath --version }
 
       - name: Build Release ARM64
         run: msbuild OpenMTR.sln /p:Configuration=Release /p:Platform=ARM64 /m
