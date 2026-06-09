@@ -69,6 +69,9 @@
   <PropertyGroup>
     <QtDir Condition="'$(QT_ROOT_DIR)'!=''">$(QT_ROOT_DIR)</QtDir>
     <QtDir Condition="'$(QT_ROOT_DIR)'==''">C:\Qt\6.11.1\msvc2022_64</QtDir>
+    <!-- QtHostDir always points to AMD64 kit for host tools (moc, rcc) -->
+    <QtHostDir Condition="'$(QT_HOST_DIR)'!=''">$(QT_HOST_DIR)</QtHostDir>
+    <QtHostDir Condition="'$(QT_HOST_DIR)'==''">$(QtDir)</QtHostDir>
   </PropertyGroup>
 
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -141,14 +144,14 @@
   <!-- Qt MOC -->
   <ItemGroup>
     <CustomBuild Include="MainWindow.h">
-      <Command>$(QtDir)\bin\moc.exe %(FullPath) -o $(IntDir)moc_%(Filename).cpp</Command>
+      <Command>$(QtHostDir)\bin\moc.exe %(FullPath) -o $(IntDir)moc_%(Filename).cpp</Command>
       <Outputs>$(IntDir)moc_%(Filename).cpp</Outputs>
       <Message>MOC %(Filename).h</Message>
     </CustomBuild>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="resources.qrc">
-      <Command>$(QtDir)\bin\rcc.exe -name resources %(FullPath) -o $(IntDir)qrc_resources.cpp</Command>
+      <Command>$(QtHostDir)\bin\rcc.exe -name resources %(FullPath) -o $(IntDir)qrc_resources.cpp</Command>
       <Outputs>$(IntDir)qrc_resources.cpp</Outputs>
       <Message>RCC %(Filename).qrc</Message>
     </CustomBuild>
