@@ -125,6 +125,10 @@ jobs:
             -replace [regex]::Escape("$qtArm64\bin\rcc.exe"), "$qtAmd64\bin\rcc.exe" `
             | Set-Content OpenMTR.vcxproj
 
+      - name: Debug vcxproj moc path
+        shell: pwsh
+        run: Get-Content OpenMTR.vcxproj | Select-String "moc|rcc|QtDir|QtHost"
+
       - name: Build Release ARM64
         run: msbuild OpenMTR.sln /p:Configuration=Release /p:Platform=ARM64 /m
 
