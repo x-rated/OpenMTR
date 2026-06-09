@@ -85,16 +85,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Qt6 AMD64 (windeployqt + cross tools)
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.11.1'
-          host: 'windows'
-          target: 'desktop'
-          arch: 'win64_msvc2022_64'
-          cache: true
-          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@refs/pull/1000/head'
-
       - name: Install Qt6 ARM64 (libraries)
         uses: jurplel/install-qt-action@v4
         with:
@@ -105,24 +95,35 @@ jobs:
           cache: true
           aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@refs/pull/1000/head'
 
+      - name: Install Qt6 AMD64 (windeployqt + cross tools)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.11.1'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+          cache: true
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@refs/pull/1000/head'
+
       - name: Setup MSVC
         uses: microsoft/setup-msbuild@v2
 
       - name: Update Qt path in project for ARM64
         shell: pwsh
         run: |
+          # QT_ROOT_DIR = AMD64 (installed last)
           $qtAmd64 = $env:QT_ROOT_DIR
           $qtArm64 = (Get-ChildItem "$env:RUNNER_TEMP\Qt" -Recurse -Directory | Where-Object { $_.Name -like "msvc2022_arm64*" } | Select-Object -First 1).FullName
           Write-Host "Qt AMD64 (host): $qtAmd64"
           Write-Host "Qt ARM64 (target): $qtArm64"
-          # Replace all Qt paths: first set ARM64 for everything
-          # then fix moc/rcc back to AMD64 host tools
           $vcxproj = (Get-Content OpenMTR.vcxproj -Raw)
+          # Set ARM64 as target Qt
           $vcxproj = $vcxproj -replace 'C:\\Qt\\6\.11\.1\\msvc2022_64', $qtArm64
-          $mocCmd = "$(QtHostDir)\bin\moc.exe"
-          $rccCmd = "$(QtHostDir)\bin\rcc.exe"
-          $vcxproj = $vcxproj -replace '\$\(QtHostDir\)\\bin\\moc\.exe', "$qtAmd64\bin\moc.exe"
-          $vcxproj = $vcxproj -replace '\$\(QtHostDir\)\\bin\\rcc\.exe', "$qtAmd64\bin\rcc.exe"
+          # Fix moc/rcc to use AMD64 host tools
+          $mocExe = $qtAmd64 + "\bin\moc.exe"
+          $rccExe = $qtAmd64 + "\bin\rcc.exe"
+          $vcxproj = $vcxproj -replace [regex]::Escape($qtArm64 + "\bin\moc.exe"), $mocExe
+          $vcxproj = $vcxproj -replace [regex]::Escape($qtArm64 + "\bin\rcc.exe"), $rccExe
           Set-Content OpenMTR.vcxproj $vcxproj
 
       - name: Debug vcxproj moc path
