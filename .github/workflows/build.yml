@@ -120,6 +120,15 @@ jobs:
             | Set-Content OpenMTR.vcxproj
           echo "QT_HOST_DIR=$qtAmd64" >> $env:GITHUB_ENV
 
+      - name: Debug Qt paths
+        shell: pwsh
+        run: |
+          Write-Host "QT_ROOT_DIR=$env:QT_ROOT_DIR"
+          Write-Host "QT_HOST_DIR=$env:QT_HOST_DIR"
+          $arm64 = (Get-ChildItem "$env:RUNNER_TEMP\Qt" -Recurse -Directory | Where-Object { $_.Name -like "msvc2022_arm64*" })
+          Write-Host "ARM64 dirs found: $arm64"
+          Get-Content OpenMTR.vcxproj | Select-String "QtDir|QtHostDir|moc|rcc"
+
       - name: Build Release ARM64
         run: msbuild OpenMTR.sln /p:Configuration=Release /p:Platform=ARM64 /m
 
