@@ -101,7 +101,7 @@ jobs:
           version: '6.11.0'
           host: 'windows'
           target: 'desktop'
-          arch: 'win64_msvc2022_arm64'
+          arch: 'win64_msvc2022_arm64_cross_compiled'
           cache: true
           aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@refs/pull/1000/head'
 
