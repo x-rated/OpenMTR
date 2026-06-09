@@ -115,15 +115,15 @@ jobs:
           $qtArm64 = (Get-ChildItem "$env:RUNNER_TEMP\Qt" -Recurse -Directory | Where-Object { $_.Name -like "msvc2022_arm64*" } | Select-Object -First 1).FullName
           Write-Host "Qt AMD64 (host): $qtAmd64"
           Write-Host "Qt ARM64 (target): $qtArm64"
-          # Replace Qt target path with ARM64 kit
-          (Get-Content OpenMTR.vcxproj) `
-            -replace 'C:\\Qt\\6\.11\.1\\msvc2022_64', $qtArm64 `
-            | Set-Content OpenMTR.vcxproj
-          # Hardcode moc/rcc to AMD64 host tools directly in vcxproj
-          (Get-Content OpenMTR.vcxproj) `
-            -replace [regex]::Escape("$qtArm64\bin\moc.exe"), "$qtAmd64\bin\moc.exe" `
-            -replace [regex]::Escape("$qtArm64\bin\rcc.exe"), "$qtAmd64\bin\rcc.exe" `
-            | Set-Content OpenMTR.vcxproj
+          # Replace all Qt paths: first set ARM64 for everything
+          # then fix moc/rcc back to AMD64 host tools
+          $vcxproj = (Get-Content OpenMTR.vcxproj -Raw)
+          $vcxproj = $vcxproj -replace 'C:\\Qt\\6\.11\.1\\msvc2022_64', $qtArm64
+          $mocCmd = "$(QtHostDir)\bin\moc.exe"
+          $rccCmd = "$(QtHostDir)\bin\rcc.exe"
+          $vcxproj = $vcxproj -replace '\$\(QtHostDir\)\\bin\\moc\.exe', "$qtAmd64\bin\moc.exe"
+          $vcxproj = $vcxproj -replace '\$\(QtHostDir\)\\bin\\rcc\.exe', "$qtAmd64\bin\rcc.exe"
+          Set-Content OpenMTR.vcxproj $vcxproj
 
       - name: Debug vcxproj moc path
         shell: pwsh
