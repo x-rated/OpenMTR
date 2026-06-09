@@ -157,12 +157,12 @@ static unsigned WINAPI TraceThread(void* p)
     stIPInfo.Ttl   = (UCHAR)current->ttl;
     stIPInfo.Flags = IPFLAG_DONT_FRAGMENT;
 
-    char achReqData[65500];
+    char achReqData[8192];
     memset(achReqData, 32, sizeof(achReqData)); // fill with spaces
 
     union {
         ICMP_ECHO_REPLY icmp_echo_reply;
-        char achRepData[sizeof(ICMPECHO) + 65500];
+        char achRepData[sizeof(ICMPECHO) + 8192];
     };
 
     // Stagger initial send by TTL to avoid simultaneous flood on intermediate hops
@@ -217,12 +217,12 @@ static unsigned WINAPI TraceThread6(void* p)
     stIPInfo.Ttl   = (UCHAR)current->ttl;
     stIPInfo.Flags = IPFLAG_DONT_FRAGMENT;
 
-    char achReqData[65500];
+    char achReqData[8192];
     memset(achReqData, 32, sizeof(achReqData));
 
     union {
         ICMPV6_ECHO_REPLY icmpv6_echo_reply;
-        char achRepData[sizeof(PICMPV6_ECHO_REPLY) + 65500];
+        char achRepData[sizeof(PICMPV6_ECHO_REPLY) + 8192];
     };
 
     // Stagger initial send by TTL to avoid simultaneous flood on intermediate hops
