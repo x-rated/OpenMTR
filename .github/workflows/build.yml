@@ -111,11 +111,14 @@ jobs:
       - name: Update Qt path in project for ARM64
         shell: pwsh
         run: |
-          $qtArm64 = (Get-ChildItem "$env:RUNNER_TEMP\Qt" -Recurse -Directory | Where-Object { $_.Name -like "msvc2022_arm64" } | Select-Object -First 1).FullName
-          Write-Host "Qt ARM64 dir: $qtArm64"
+          $qtAmd64 = $env:QT_ROOT_DIR
+          $qtArm64 = (Get-ChildItem "$env:RUNNER_TEMP\Qt" -Recurse -Directory | Where-Object { $_.Name -like "msvc2022_arm64*" } | Select-Object -First 1).FullName
+          Write-Host "Qt AMD64 (host): $qtAmd64"
+          Write-Host "Qt ARM64 (target): $qtArm64"
           (Get-Content OpenMTR.vcxproj) `
             -replace 'C:\\Qt\\6\.11\.1\\msvc2022_64', $qtArm64 `
             | Set-Content OpenMTR.vcxproj
+          echo "QT_HOST_DIR=$qtAmd64" >> $env:GITHUB_ENV
 
       - name: Build Release ARM64
         run: msbuild OpenMTR.sln /p:Configuration=Release /p:Platform=ARM64 /m
