@@ -127,12 +127,10 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "QT_ROOT_DIR=$env:QT_ROOT_DIR"
-          Write-Host "QT_HOST_DIR=$env:QT_HOST_DIR"
-          # Test which moc.exe would actually run
-          $mocPath = "$env:QT_HOST_DIR\bin\moc.exe"
-          Write-Host "moc path: $mocPath"
-          Write-Host "moc exists: $(Test-Path $mocPath)"
-          if (Test-Path $mocPath) { & $mocPath --version }
+          Write-Host "RUNNER_TEMP=$env:RUNNER_TEMP"
+          Write-Host "--- Qt dirs found ---"
+          Get-ChildItem "D:\a\OpenMTR" -Directory | Write-Host
+          Get-ChildItem "D:\a\OpenMTR\Qt" -Recurse -Directory | Where-Object { $_.Name -like "msvc*" } | Select-Object FullName | Write-Host
 
       - name: Build Release ARM64
         shell: pwsh
@@ -148,14 +146,23 @@ jobs:
           $qtBase = (Get-ChildItem "$env:RUNNER_TEMP", "D:\a\OpenMTR" -Directory -Filter "Qt" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
           $qtAmd64 = (Get-ChildItem $qtBase -Recurse -Directory | Where-Object { $_.Name -eq "msvc2022_64" } | Select-Object -First 1).FullName
           $qtArm64 = (Get-ChildItem $qtBase -Recurse -Directory | Where-Object { $_.Name -like "msvc2022_arm64*" } | Select-Object -First 1).FullName
-          # windeployqt from AMD64 kit, --qtpaths from ARM64 kit
+          # windeployqt from AMD64 kit
           $windeployqt = "$qtAmd64\bin\windeployqt6.exe"
-          # Try qtpaths6.exe first, fall back to qtpaths.bat
-          $qtpaths = if (Test-Path "$qtArm64\bin\qtpaths6.exe") { "$qtArm64\bin\qtpaths6.exe" } `
-                     elseif (Test-Path "$qtArm64\bin\qtpaths.bat") { "$qtArm64\bin\qtpaths.bat" } `
-                     else { "$qtArm64\bin\qtpaths.exe" }
-          Write-Host "qtpaths: $qtpaths"
-          & $windeployqt --release --no-translations --no-system-d3d-compiler --qtpaths $qtpaths bin\ARM64\Release\OpenMTR.exe
+          # Manually copy ARM64 Qt DLLs — windeployqt cross-deploy is unreliable without qtpaths.bat
+          $releaseDir = "bin\ARM64\Release"
+          $arm64Bin = "$qtArm64\bin"
+          $arm64Plugins = "$qtArm64\plugins"
+          # Core DLLs
+          Copy-Item "$arm64Bin\Qt6Core.dll" $releaseDir
+          Copy-Item "$arm64Bin\Qt6Gui.dll" $releaseDir
+          Copy-Item "$arm64Bin\Qt6Widgets.dll" $releaseDir
+          # Platform plugin
+          New-Item -ItemType Directory -Force "$releaseDir\platforms" | Out-Null
+          Copy-Item "$arm64Plugins\platforms\qwindows.dll" "$releaseDir\platforms"
+          # Styles plugin
+          New-Item -ItemType Directory -Force "$releaseDir\styles" | Out-Null
+          Copy-Item "$arm64Plugins\styles\qmodernwindowsstyle.dll" "$releaseDir\styles" -ErrorAction SilentlyContinue
+          Write-Host "ARM64 Qt DLLs deployed manually"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
