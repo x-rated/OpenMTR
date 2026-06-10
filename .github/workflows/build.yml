@@ -62,8 +62,6 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         shell: cmd
         run: |
-          mkdir C:\Qt-build
-          cd C:\Qt-build
           C:\Qt-src\qtbase-everywhere-src-${{ env.QT_VERSION }}\configure.bat ^
             -prefix ${{ matrix.prefix }} ^
             -release -static -static-runtime ^
@@ -71,7 +69,8 @@ jobs:
             -opengl desktop ^
             -c++std c++20 ^
             -nomake examples -nomake tests ^
-            -confirm-license -opensource
+            -confirm-license -opensource ^
+            -- -B C:\Qt-build
 
       - name: Build Qt static
         if: steps.cache.outputs.cache-hit != 'true'
@@ -123,7 +122,7 @@ jobs:
         with:
           path: ${{ matrix.prefix }}
           key: qt-static-${{ env.QT_VERSION }}-${{ matrix.arch }}-${{ env.QT_CACHE_SUFFIX }}
-          fail-on-cache-miss: true
+          fail-on-cache-miss: false
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
