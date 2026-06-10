@@ -10,259 +10,228 @@ on:
   pull_request:
     branches: [ main ]
 
-jobs:
-  build-amd64:
-    runs-on: windows-latest
+env:
+  QT_VERSION: 6.11.1
+  # Zvedni při změně configure flagů → vynutí rebuild Qt cache
+  QT_CACHE_KEY: v1
 
+jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # Qt static cache — builduje se jen pokud cache chybí.
+  # ────────────────────────────────────────────────────────────────────────────
+  qt-static-amd64:
+    runs-on: windows-latest
+    steps:
+      - name: Check cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: C:\Qt-static
+          key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
+          lookup-only: true
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          arch: x64
+
+      - uses: actions/setup-python@v5
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          python-version: '3.12'
+
+      - name: Download Qt source
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest `
+            "https://download.qt.io/official_releases/qt/6.11/${{ env.QT_VERSION }}/submodules/qtbase-everywhere-src-${{ env.QT_VERSION }}.zip" `
+            -OutFile qtbase.zip -TimeoutSec 600
+          Expand-Archive qtbase.zip -DestinationPath C:\Qt-src
+
+      - name: Build Qt static (AMD64)
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          mkdir C:\Qt-build && cd C:\Qt-build
+          C:\Qt-src\qtbase-everywhere-src-${{ env.QT_VERSION }}\configure.bat ^
+            -prefix C:\Qt-static ^
+            -release -static -static-runtime ^
+            -platform win32-msvc -opengl desktop ^
+            -c++std c++20 ^
+            -nomake examples -nomake tests -nomake tools ^
+            -make libs ^
+            -no-dbus -no-sql-sqlite -no-sql-odbc ^
+            -- -DCMAKE_BUILD_PARALLEL_LEVEL=4
+          cmake --build . --parallel 4
+          cmake --install .
+
+      - name: Save cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:\Qt-static
+          key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
+
+  qt-static-arm64:
+    runs-on: windows-latest
+    steps:
+      - name: Check cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: C:\Qt-static-arm64
+          key: qt-static-${{ env.QT_VERSION }}-arm64-${{ env.QT_CACHE_KEY }}
+          lookup-only: true
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          arch: amd64_arm64
+
+      - uses: actions/setup-python@v5
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          python-version: '3.12'
+
+      - name: Download Qt source
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest `
+            "https://download.qt.io/official_releases/qt/6.11/${{ env.QT_VERSION }}/submodules/qtbase-everywhere-src-${{ env.QT_VERSION }}.zip" `
+            -OutFile qtbase.zip -TimeoutSec 600
+          Expand-Archive qtbase.zip -DestinationPath C:\Qt-src
+
+      - name: Build Qt static (ARM64 cross-compile)
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          mkdir C:\Qt-build-arm64 && cd C:\Qt-build-arm64
+          C:\Qt-src\qtbase-everywhere-src-${{ env.QT_VERSION }}\configure.bat ^
+            -prefix C:\Qt-static-arm64 ^
+            -release -static -static-runtime ^
+            -platform win32-msvc -opengl desktop ^
+            -c++std c++20 ^
+            -nomake examples -nomake tests -nomake tools ^
+            -make libs ^
+            -no-dbus -no-sql-sqlite -no-sql-odbc ^
+            -- -DCMAKE_BUILD_PARALLEL_LEVEL=4 ^
+               -DCMAKE_SYSTEM_NAME=Windows ^
+               -DCMAKE_SYSTEM_PROCESSOR=ARM64
+          cmake --build . --parallel 4
+          cmake --install .
+
+      - name: Save cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:\Qt-static-arm64
+          key: qt-static-${{ env.QT_VERSION }}-arm64-${{ env.QT_CACHE_KEY }}
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # AMD64 build
+  # ────────────────────────────────────────────────────────────────────────────
+  build-amd64:
+    needs: qt-static-amd64
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Qt6
-        uses: jurplel/install-qt-action@v4
+      - name: Restore Qt static (AMD64)
+        uses: actions/cache/restore@v4
         with:
-          version: '6.11.1'
-          host: 'windows'
-          target: 'desktop'
-          arch: 'win64_msvc2022_64'
-          cache: true
-          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@refs/pull/1000/head'
+          path: C:\Qt-static
+          key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
+          fail-on-cache-miss: true
 
-      - name: Setup MSVC
-        uses: microsoft/setup-msbuild@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
-      - name: Update Qt path in project
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build Release AMD64
+        run: msbuild OpenMTR.sln /p:Configuration=Release /p:Platform=x64 /p:QT_ROOT_DIR="C:\Qt-static" /m
+
+      - name: Collect artifact
         shell: pwsh
         run: |
-          $qtDir = $env:QT_ROOT_DIR
-          Write-Host "Qt root dir: $qtDir"
-          (Get-Content OpenMTR.vcxproj) `
-            -replace 'C:\\Qt\\6\.11\.1\\msvc2022_64', $qtDir `
-            | Set-Content OpenMTR.vcxproj
+          $exe = "bin\x64\Release\OpenMTR.exe"
+          Write-Host "Velikost: $([math]::Round((Get-Item $exe).Length/1MB,2)) MB"
+          Copy-Item $exe OpenMTR-AMD64.exe
 
-      - name: Build Release
-        run: msbuild OpenMTR.sln /p:Configuration=Release /p:Platform=x64 /m
-
-      - name: Deploy Qt DLLs
-        shell: pwsh
-        run: |
-          $windeployqt = "$env:QT_ROOT_DIR\bin\windeployqt6.exe"
-          & $windeployqt --release --no-translations --no-system-d3d-compiler bin\x64\Release\OpenMTR.exe
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-
-      - name: Cache node_modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: npm-evb-v1
-
-      - name: Install EVB tools
-        run: npm install enigmavirtualbox generate-evb
-
-      - name: Pack single exe
-        run: node .github/workflows/pack.js bin\x64\Release OpenMTR.exe
-
-      - name: Show packed exe size
-        shell: pwsh
-        run: Get-Item OpenMTR.exe | Select-Object Name, @{N='MB';E={[math]::Round($_.Length/1MB,2)}}
-
-      - name: Rename AMD64 exe
-        shell: pwsh
-        run: Rename-Item OpenMTR.exe OpenMTR-AMD64.exe
-
-      - name: Upload AMD64 exe
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: OpenMTR-AMD64
           path: OpenMTR-AMD64.exe
 
+  # ────────────────────────────────────────────────────────────────────────────
+  # ARM64 build (cross-compile na windows-latest, stejně jako dosud)
+  # ────────────────────────────────────────────────────────────────────────────
   build-arm64:
+    needs: qt-static-arm64
     runs-on: windows-latest
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Qt6 ARM64 (libraries)
-        uses: jurplel/install-qt-action@v4
+      - name: Restore Qt static (ARM64 libs)
+        uses: actions/cache/restore@v4
         with:
-          version: '6.11.0'
-          host: 'windows'
-          target: 'desktop'
-          arch: 'win64_msvc2022_arm64_cross_compiled'
-          cache: true
-          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@refs/pull/1000/head'
+          path: C:\Qt-static-arm64
+          key: qt-static-${{ env.QT_VERSION }}-arm64-${{ env.QT_CACHE_KEY }}
+          fail-on-cache-miss: true
 
-      - name: Install Qt6 AMD64 (windeployqt + cross tools)
-        uses: jurplel/install-qt-action@v4
+      - name: Restore Qt static (AMD64 host tools — moc.exe, rcc.exe)
+        uses: actions/cache/restore@v4
         with:
-          version: '6.11.1'
-          host: 'windows'
-          target: 'desktop'
-          arch: 'win64_msvc2022_64'
-          cache: true
-          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@refs/pull/1000/head'
+          path: C:\Qt-static
+          key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
+          fail-on-cache-miss: true
 
-      - name: Setup MSVC
-        uses: microsoft/setup-msbuild@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64_arm64
 
-      - name: Update Qt path in project for ARM64
-        shell: pwsh
-        run: |
-          # Find both Qt kits explicitly
-          $qtBase = (Get-ChildItem "$env:RUNNER_TEMP", "D:\a\OpenMTR" -Directory -Filter "Qt" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-          Write-Host "Qt base: $qtBase"
-          $qtArm64 = (Get-ChildItem $qtBase -Recurse -Directory | Where-Object { $_.Name -like "msvc2022_arm64*" } | Select-Object -First 1).FullName
-          Write-Host "Qt ARM64 (target): $qtArm64"
-          # Set ARM64 as target Qt (libraries, includes)
-          (Get-Content OpenMTR.vcxproj) `
-            -replace 'C:\\Qt\\6\.11\.1\\msvc2022_64', $qtArm64 `
-            | Set-Content OpenMTR.vcxproj
-          # Store ARM64 path for use in build step
-          echo "QT_ARM64_DIR=$qtArm64" >> $env:GITHUB_ENV
-
-      - name: Debug Qt paths and env
-        shell: pwsh
-        run: |
-          Write-Host "QT_ROOT_DIR=$env:QT_ROOT_DIR"
-          Write-Host "RUNNER_TEMP=$env:RUNNER_TEMP"
-          Write-Host "--- Qt dirs found ---"
-          Get-ChildItem "D:\a\OpenMTR" -Directory | Write-Host
-          Get-ChildItem "D:\a\OpenMTR\Qt" -Recurse -Directory | Where-Object { $_.Name -like "msvc*" } | Select-Object FullName | Write-Host
+      - uses: microsoft/setup-msbuild@v2
 
       - name: Build Release ARM64
+        run: |
+          msbuild OpenMTR.sln ^
+            /p:Configuration=Release /p:Platform=ARM64 ^
+            /p:QT_ROOT_DIR="C:\Qt-static-arm64" ^
+            /p:QT_HOST_DIR="C:\Qt-static" ^
+            /m
+
+      - name: Collect artifact
         shell: pwsh
         run: |
-          $qtBase = (Get-ChildItem "$env:RUNNER_TEMP", "D:\a\OpenMTR" -Directory -Filter "Qt" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-          $qtAmd64 = (Get-ChildItem $qtBase -Recurse -Directory | Where-Object { $_.Name -eq "msvc2022_64" } | Select-Object -First 1).FullName
-          Write-Host "Qt AMD64 host tools: $qtAmd64"
-          msbuild OpenMTR.sln /p:Configuration=Release /p:Platform=ARM64 /p:QT_HOST_DIR="$qtAmd64" /m
+          $exe = "bin\ARM64\Release\OpenMTR.exe"
+          Write-Host "Velikost: $([math]::Round((Get-Item $exe).Length/1MB,2)) MB"
+          Copy-Item $exe OpenMTR-ARM64.exe
 
-      - name: Deploy Qt DLLs ARM64
-        shell: pwsh
-        run: |
-          $qtBase = (Get-ChildItem "$env:RUNNER_TEMP", "D:\a\OpenMTR" -Directory -Filter "Qt" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-          $qtAmd64 = (Get-ChildItem $qtBase -Recurse -Directory | Where-Object { $_.Name -eq "msvc2022_64" } | Select-Object -First 1).FullName
-          $qtArm64 = (Get-ChildItem $qtBase -Recurse -Directory | Where-Object { $_.Name -like "msvc2022_arm64*" } | Select-Object -First 1).FullName
-          # windeployqt from AMD64 kit
-          $windeployqt = "$qtAmd64\bin\windeployqt6.exe"
-          # Manually copy ARM64 Qt DLLs — windeployqt cross-deploy is unreliable without qtpaths.bat
-          $releaseDir = "bin\ARM64\Release"
-          $arm64Bin = "$qtArm64\bin"
-          $arm64Plugins = "$qtArm64\plugins"
-          # Core DLLs
-          Copy-Item "$arm64Bin\Qt6Core.dll" $releaseDir
-          Copy-Item "$arm64Bin\Qt6Gui.dll" $releaseDir
-          Copy-Item "$arm64Bin\Qt6Widgets.dll" $releaseDir
-          # Platform plugin
-          New-Item -ItemType Directory -Force "$releaseDir\platforms" | Out-Null
-          Copy-Item "$arm64Plugins\platforms\qwindows.dll" "$releaseDir\platforms"
-          # Styles plugin
-          New-Item -ItemType Directory -Force "$releaseDir\styles" | Out-Null
-          Copy-Item "$arm64Plugins\styles\qmodernwindowsstyle.dll" "$releaseDir\styles" -ErrorAction SilentlyContinue
-          Write-Host "ARM64 Qt DLLs deployed manually"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-
-      - name: Cache node_modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: npm-evb-v1
-
-      - name: Install EVB tools
-        run: npm install enigmavirtualbox generate-evb
-
-      - name: Pack single exe ARM64
-        run: node .github/workflows/pack.js bin\ARM64\Release OpenMTR.exe
-
-      - name: Rename ARM64 exe
-        shell: pwsh
-        run: Rename-Item OpenMTR.exe OpenMTR-ARM64.exe
-
-      - name: Upload ARM64 exe
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: OpenMTR-ARM64
           path: OpenMTR-ARM64.exe
 
-
+  # ────────────────────────────────────────────────────────────────────────────
+  # Release při tagu v*.*.*
+  # ────────────────────────────────────────────────────────────────────────────
   release:
     needs: [build-amd64, build-arm64]
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-
     permissions:
       contents: write
-
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Qt6
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.11.1'
-          host: 'windows'
-          target: 'desktop'
-          arch: 'win64_msvc2022_64'
-          cache: true
-          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@refs/pull/1000/head'
-
-      - name: Setup MSVC
-        uses: microsoft/setup-msbuild@v2
-
-      - name: Update Qt path in project
-        shell: pwsh
-        run: |
-          $qtDir = $env:QT_ROOT_DIR
-          (Get-Content OpenMTR.vcxproj) `
-            -replace 'C:\\Qt\\6\.11\.1\\msvc2022_64', $qtDir `
-            | Set-Content OpenMTR.vcxproj
-
-      - name: Build Release
-        run: msbuild OpenMTR.sln /p:Configuration=Release /p:Platform=x64 /m
-
-      - name: Deploy Qt DLLs
-        shell: pwsh
-        run: |
-          $windeployqt = "$env:QT_ROOT_DIR\bin\windeployqt6.exe"
-          & $windeployqt --release --no-translations --no-system-d3d-compiler bin\x64\Release\OpenMTR.exe
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-
-      - name: Cache node_modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: npm-evb-v1
-
-      - name: Install EVB tools
-        run: npm install enigmavirtualbox generate-evb
-
-      - name: Pack single exe
-        run: node .github/workflows/pack.js bin\x64\Release OpenMTR.exe
-
-      - name: Rename AMD64 exe
-        shell: pwsh
-        run: Rename-Item OpenMTR.exe OpenMTR-AMD64.exe
-
-      - name: Download ARM64 artifact
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: OpenMTR-ARM64
+          path: dist
+          merge-multiple: true
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            OpenMTR-AMD64.exe
-            OpenMTR-ARM64.exe
+          files: dist/*.exe
           generate_release_notes: true
