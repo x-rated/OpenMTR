@@ -12,10 +12,10 @@ on:
 
 env:
   QT_VERSION: 6.11.1
-  QT_CACHE_KEY: v3
+  QT_CACHE_KEY: v1
 
 jobs:
-  # ── Qt static AMD64 ────────────────────────────────────────────────────────
+  # ── Qt static AMD64 ──────────────────────────────────────────────────────────
   qt-static-amd64:
     runs-on: windows-latest
     steps:
@@ -39,6 +39,7 @@ jobs:
 
       - name: Install Ninja
         if: steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
         run: choco install ninja -y
 
       - name: Download Qt source
@@ -68,16 +69,12 @@ jobs:
       - name: Build Qt static (AMD64)
         if: steps.cache.outputs.cache-hit != 'true'
         shell: cmd
-        run: |
-          cd C:\Qt-build
-          cmake --build . --parallel 4
+        run: cd C:\Qt-build && cmake --build . --parallel 4
 
       - name: Install Qt static (AMD64)
         if: steps.cache.outputs.cache-hit != 'true'
         shell: cmd
-        run: |
-          cd C:\Qt-build
-          cmake --install .
+        run: cd C:\Qt-build && cmake --install .
 
       - name: Save cache
         if: steps.cache.outputs.cache-hit != 'true'
@@ -86,9 +83,7 @@ jobs:
           path: C:\Qt-static
           key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
 
-  # ── Qt static ARM64 (cross-compile z AMD64) ────────────────────────────────
-  # Qt cross-compile vyžaduje nejdřív host build (moc, rcc, atd.)
-  # Proto závisí na qt-static-amd64 a použije ho jako qt-host-path.
+  # ── Qt static ARM64 (cross-compile, potřebuje AMD64 host tools) ─────────────
   qt-static-arm64:
     needs: qt-static-amd64
     runs-on: windows-latest
@@ -101,7 +96,7 @@ jobs:
           key: qt-static-${{ env.QT_VERSION }}-arm64-${{ env.QT_CACHE_KEY }}
           lookup-only: true
 
-      - name: Restore AMD64 Qt (host tools pro cross-compile)
+      - name: Restore AMD64 Qt (host tools)
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v4
         with:
@@ -109,7 +104,6 @@ jobs:
           key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
           fail-on-cache-miss: true
 
-      # amd64_arm64 = cross-compile toolchain: kompiluje AMD64 hostu → ARM64 target
       - uses: ilammy/msvc-dev-cmd@v1
         if: steps.cache.outputs.cache-hit != 'true'
         with:
@@ -122,6 +116,7 @@ jobs:
 
       - name: Install Ninja
         if: steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
         run: choco install ninja -y
 
       - name: Download Qt source
@@ -133,7 +128,7 @@ jobs:
             -OutFile qtbase.zip -TimeoutSec 600
           Expand-Archive qtbase.zip -DestinationPath C:\Qt-src
 
-      - name: Configure Qt static (ARM64 cross-compile)
+      - name: Configure Qt static (ARM64)
         if: steps.cache.outputs.cache-hit != 'true'
         shell: cmd
         run: |
@@ -153,16 +148,12 @@ jobs:
       - name: Build Qt static (ARM64)
         if: steps.cache.outputs.cache-hit != 'true'
         shell: cmd
-        run: |
-          cd C:\Qt-build-arm64
-          cmake --build . --parallel 4
+        run: cd C:\Qt-build-arm64 && cmake --build . --parallel 4
 
       - name: Install Qt static (ARM64)
         if: steps.cache.outputs.cache-hit != 'true'
         shell: cmd
-        run: |
-          cd C:\Qt-build-arm64
-          cmake --install .
+        run: cd C:\Qt-build-arm64 && cmake --install .
 
       - name: Save cache
         if: steps.cache.outputs.cache-hit != 'true'
@@ -171,7 +162,7 @@ jobs:
           path: C:\Qt-static-arm64
           key: qt-static-${{ env.QT_VERSION }}-arm64-${{ env.QT_CACHE_KEY }}
 
-  # ── AMD64 build ────────────────────────────────────────────────────────────
+  # ── AMD64 build ──────────────────────────────────────────────────────────────
   build-amd64:
     needs: qt-static-amd64
     runs-on: windows-latest
@@ -188,24 +179,25 @@ jobs:
         with:
           arch: x64
 
-      - uses: microsoft/setup-msbuild@v2
-
-      - name: Find Qt plugin libs (diagnostika)
-        shell: pwsh
+      - name: Configure (CMake)
+        shell: cmd
         run: |
-          Write-Host "=== C:\Qt-static\lib\ (qwindows*) ==="
-          Get-ChildItem "C:\Qt-static\lib" -Filter "*windows*" -Recurse -ErrorAction SilentlyContinue | Select-Object FullName
-          Get-ChildItem "C:\Qt-static\lib" -Filter "*platform*" -Recurse -ErrorAction SilentlyContinue | Select-Object FullName
-          Write-Host "=== C:\Qt-static\plugins\ ==="
-          Get-ChildItem "C:\Qt-static\plugins" -Recurse -ErrorAction SilentlyContinue | Select-Object FullName
+          mkdir build-amd64
+          cd build-amd64
+          cmake .. ^
+            -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_PREFIX_PATH=C:\Qt-static ^
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
 
-      - name: Build Release AMD64
-        run: msbuild OpenMTR.sln /p:Configuration=Release /p:Platform=x64 /p:QT_ROOT_DIR="C:\Qt-static" /m
+      - name: Build
+        shell: cmd
+        run: cd build-amd64 && cmake --build . --parallel 4
 
       - name: Collect artifact
         shell: pwsh
         run: |
-          $exe = "bin\x64\Release\OpenMTR.exe"
+          $exe = "build-amd64\OpenMTR.exe"
           Write-Host "Velikost: $([math]::Round((Get-Item $exe).Length/1MB,2)) MB"
           Copy-Item $exe OpenMTR-AMD64.exe
 
@@ -214,7 +206,7 @@ jobs:
           name: OpenMTR-AMD64
           path: OpenMTR-AMD64.exe
 
-  # ── ARM64 build ────────────────────────────────────────────────────────────
+  # ── ARM64 build ──────────────────────────────────────────────────────────────
   build-arm64:
     needs: qt-static-arm64
     runs-on: windows-latest
@@ -237,22 +229,31 @@ jobs:
         with:
           arch: amd64_arm64
 
-      - uses: microsoft/setup-msbuild@v2
+      - name: Install Ninja
+        shell: pwsh
+        run: choco install ninja -y
 
-      - name: Build Release ARM64
+      - name: Configure (CMake)
         shell: cmd
         run: |
-          msbuild OpenMTR.sln ^
-            /p:Configuration=Release ^
-            /p:Platform=ARM64 ^
-            /p:QT_ROOT_DIR="C:\Qt-static-arm64" ^
-            /p:QT_HOST_DIR="C:\Qt-static" ^
-            /m
+          mkdir build-arm64
+          cd build-arm64
+          cmake .. ^
+            -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_PREFIX_PATH=C:\Qt-static-arm64 ^
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded ^
+            -DCMAKE_SYSTEM_NAME=Windows ^
+            -DCMAKE_SYSTEM_PROCESSOR=ARM64
+
+      - name: Build
+        shell: cmd
+        run: cd build-arm64 && cmake --build . --parallel 4
 
       - name: Collect artifact
         shell: pwsh
         run: |
-          $exe = "bin\ARM64\Release\OpenMTR.exe"
+          $exe = "build-arm64\OpenMTR.exe"
           Write-Host "Velikost: $([math]::Round((Get-Item $exe).Length/1MB,2)) MB"
           Copy-Item $exe OpenMTR-ARM64.exe
 
@@ -261,7 +262,7 @@ jobs:
           name: OpenMTR-ARM64
           path: OpenMTR-ARM64.exe
 
-  # ── Release při tagu v*.*.* ────────────────────────────────────────────────
+  # ── Release při tagu v*.*.* ──────────────────────────────────────────────────
   release:
     needs: [build-amd64, build-arm64]
     runs-on: ubuntu-latest
