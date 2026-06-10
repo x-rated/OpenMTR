@@ -1,345 +1,72 @@
-name: Build
+name: Build OpenMTR (Multi-Arch)
 
 on:
   push:
-    branches: [ main ]
-    paths-ignore:
-      - '**.md'
-      - '.gitignore'
-      - 'LICENSE'
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
-
-env:
-  QT_VERSION: 6.11.1
-  QT_CACHE_KEY: v2
+    branches: [ main, master ]
 
 jobs:
-  # ── Qt static AMD64 ──────────────────────────────────────────────────────────
-  qt-static-amd64:
-    runs-on: windows-latest
+  build:
+    name: Build for ${{ matrix.arch }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        # Definujeme obě architektury, které požaduješ
+        include:
+          - arch: amd64
+            qt_arch: win64_msvc2022_64
+            msvc_arch: x64
+          - arch: arm64
+            qt_arch: win64_msvc2022_arm64
+            msvc_arch: x64_arm64
+
     steps:
-      - name: Check cache
-        id: cache
-        uses: actions/cache@v4
-        with:
-          path: C:\Qt-static
-          key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
-          lookup-only: true
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      - uses: ilammy/msvc-dev-cmd@v1
-        if: steps.cache.outputs.cache-hit != 'true'
-        with:
-          arch: x64
+    # 1. Instalace správné verze Qt6 podle architektury v matrixu
+    - name: Install Qt6
+      uses: jurplel/install-qt-action@v3
+      with:
+        version: '6.8.2' # Používáme stabilní LTS verzi s plnou podporou ARM64
+        host: 'windows'
+        target: 'desktop'
+        arch: ${{ matrix.qt_arch }}
+        modules: 'qtsvg'
 
-      - uses: actions/setup-python@v5
-        if: steps.cache.outputs.cache-hit != 'true'
-        with:
-          python-version: '3.12'
+    # 2. Nastavení MSVC kompilátoru pro cross-kompilaci (zejména důležité pro arm64)
+    - name: Set up MSVC Developer Command Prompt
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: ${{ matrix.msvc_arch }}
 
-      - name: Install Ninja
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: choco install ninja -y
+    # 3. Konfigurace CMake s předáním architektury
+    - name: Configure CMake
+      run: |
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_PROCESSOR=${{ matrix.arch }}
 
-      - name: Download Qt source
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          Invoke-WebRequest `
-            "https://download.qt.io/official_releases/qt/6.11/${{ env.QT_VERSION }}/submodules/qtbase-everywhere-src-${{ env.QT_VERSION }}.zip" `
-            -OutFile qtbase.zip -TimeoutSec 600
-          Expand-Archive qtbase.zip -DestinationPath C:\Qt-src
-          Invoke-WebRequest `
-            "https://download.qt.io/official_releases/qt/6.11/${{ env.QT_VERSION }}/submodules/qtsvg-everywhere-src-${{ env.QT_VERSION }}.zip" `
-            -OutFile qtsvg.zip -TimeoutSec 300
-          Expand-Archive qtsvg.zip -DestinationPath C:\Qt-src
+    # 4. Kompilace aplikace
+    - name: Build Project
+      run: |
+        cmake --build build --config Release
 
-      - name: Configure Qt static (AMD64)
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: cmd
-        run: |
-          mkdir C:\Qt-build
-          cd C:\Qt-build
-          C:\Qt-src\qtbase-everywhere-src-${{ env.QT_VERSION }}\configure.bat ^
-            -prefix C:\Qt-static ^
-            -release -static -static-runtime ^
-            -platform win32-msvc ^
-            -opengl desktop ^
-            -c++std c++20 ^
-            -nomake examples -nomake tests ^
-            -confirm-license -opensource
+    # 5. Přejmenování výsledného exe souboru, aby se nespletly (přidá -amd64 nebo -arm64)
+    - name: Rename executable
+      shell: pwsh
+      run: |
+        if (Test-Path "build/Release/OpenMTR.exe") {
+          Move-Item "build/Release/OpenMTR.exe" "build/Release/OpenMTR-${{ matrix.arch }}.exe"
+        } elseif (Test-Path "build/OpenMTR.exe") {
+          Move-Item "build/OpenMTR.exe" "build/OpenMTR-${{ matrix.arch }}.exe"
+        }
 
-      - name: Build Qt static (AMD64)
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: cmd
-        run: cd C:\Qt-build && cmake --build . --parallel 4
-
-      - name: Install Qt static + build qtsvg (AMD64)
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: cmd
-        run: |
-          cmake --install C:\Qt-build
-          cmake -S C:\Qt-src\qtsvg-everywhere-src-${{ env.QT_VERSION }} ^
-                -B C:\Qt-build-svg ^
-                -G Ninja ^
-                -DCMAKE_BUILD_TYPE=Release ^
-                -DCMAKE_PREFIX_PATH=C:\Qt-static ^
-                -DCMAKE_INSTALL_PREFIX=C:\Qt-static ^
-                -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
-          cmake --build C:\Qt-build-svg --parallel 4
-          cmake --install C:\Qt-build-svg
-
-      - name: Save cache
-        if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: C:\Qt-static
-          key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
-
-  # ── Qt static ARM64 (cross-compile, potřebuje AMD64 host tools) ─────────────
-  qt-static-arm64:
-    needs: qt-static-amd64
-    runs-on: windows-latest
-    steps:
-      - name: Check cache
-        id: cache
-        uses: actions/cache@v4
-        with:
-          path: C:\Qt-static-arm64
-          key: qt-static-${{ env.QT_VERSION }}-arm64-${{ env.QT_CACHE_KEY }}
-          lookup-only: true
-
-      - name: Restore AMD64 Qt (host tools)
-        if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/restore@v4
-        with:
-          path: C:\Qt-static
-          key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
-          fail-on-cache-miss: true
-
-      - uses: ilammy/msvc-dev-cmd@v1
-        if: steps.cache.outputs.cache-hit != 'true'
-        with:
-          arch: amd64_arm64
-
-      - uses: actions/setup-python@v5
-        if: steps.cache.outputs.cache-hit != 'true'
-        with:
-          python-version: '3.12'
-
-      - name: Install Ninja
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: choco install ninja -y
-
-      - name: Download Qt source
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          Invoke-WebRequest `
-            "https://download.qt.io/official_releases/qt/6.11/${{ env.QT_VERSION }}/submodules/qtbase-everywhere-src-${{ env.QT_VERSION }}.zip" `
-            -OutFile qtbase.zip -TimeoutSec 600
-          Expand-Archive qtbase.zip -DestinationPath C:\Qt-src
-          Invoke-WebRequest `
-            "https://download.qt.io/official_releases/qt/6.11/${{ env.QT_VERSION }}/submodules/qtsvg-everywhere-src-${{ env.QT_VERSION }}.zip" `
-            -OutFile qtsvg.zip -TimeoutSec 300
-          Expand-Archive qtsvg.zip -DestinationPath C:\Qt-src
-
-      - name: Configure Qt static (ARM64)
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: cmd
-        run: |
-          mkdir C:\Qt-build-arm64
-          cd C:\Qt-build-arm64
-          C:\Qt-src\qtbase-everywhere-src-${{ env.QT_VERSION }}\configure.bat ^
-            -prefix C:\Qt-static-arm64 ^
-            -qt-host-path C:\Qt-static ^
-            -release -static -static-runtime ^
-            -platform win32-msvc ^
-            -opengl desktop ^
-            -c++std c++20 ^
-            -nomake examples -nomake tests ^
-            -confirm-license -opensource ^
-            -- -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=ARM64
-
-      - name: Build Qt static (ARM64)
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: cmd
-        run: cd C:\Qt-build-arm64 && cmake --build . --parallel 4
-
-      - name: Install Qt static + build qtsvg (ARM64)
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: cmd
-        run: |
-          cmake --install C:\Qt-build-arm64
-          cmake -S C:\Qt-src\qtsvg-everywhere-src-${{ env.QT_VERSION }} ^
-                -B C:\Qt-build-svg-arm64 ^
-                -G Ninja ^
-                -DCMAKE_BUILD_TYPE=Release ^
-                -DCMAKE_PREFIX_PATH=C:\Qt-static-arm64 ^
-                -DCMAKE_INSTALL_PREFIX=C:\Qt-static-arm64 ^
-                -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded ^
-                -DCMAKE_SYSTEM_NAME=Windows ^
-                -DCMAKE_SYSTEM_PROCESSOR=ARM64 ^
-                -DQT_HOST_PATH=C:\Qt-static
-          cmake --build C:\Qt-build-svg-arm64 --parallel 4
-          cmake --install C:\Qt-build-svg-arm64
-
-      - name: Save cache
-        if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: C:\Qt-static-arm64
-          key: qt-static-${{ env.QT_VERSION }}-arm64-${{ env.QT_CACHE_KEY }}
-
-  # ── AMD64 build ──────────────────────────────────────────────────────────────
-  build-amd64:
-    needs: qt-static-amd64
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/cache/restore@v4
-        with:
-          path: C:\Qt-static
-          key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
-          fail-on-cache-miss: true
-
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Configure (CMake)
-        shell: cmd
-        run: |
-          mkdir build-amd64
-          cd build-amd64
-          cmake .. ^
-            -G Ninja ^
-            -DCMAKE_BUILD_TYPE=Release ^
-            -DCMAKE_PREFIX_PATH=C:\Qt-static ^
-            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
-
-      - name: Build
-        shell: cmd
-        run: cd build-amd64 && cmake --build . --parallel 4
-
-      - name: Collect artifact
-        shell: pwsh
-        run: |
-          $exe = "build-amd64\OpenMTR.exe"
-          Write-Host "Velikost: $([math]::Round((Get-Item $exe).Length/1MB,2)) MB"
-          Copy-Item $exe OpenMTR-AMD64.exe
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: OpenMTR-AMD64
-          path: OpenMTR-AMD64.exe
-
-  # ── ARM64 build ──────────────────────────────────────────────────────────────
-  build-arm64:
-    needs: qt-static-arm64
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/cache/restore@v4
-        with:
-          path: C:\Qt-static-arm64
-          key: qt-static-${{ env.QT_VERSION }}-arm64-${{ env.QT_CACHE_KEY }}
-          fail-on-cache-miss: true
-
-      - uses: actions/cache/restore@v4
-        with:
-          path: C:\Qt-static
-          key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
-          fail-on-cache-miss: true
-
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: amd64_arm64
-
-      - name: Install Ninja
-        shell: pwsh
-        run: choco install ninja -y
-
-      - name: Configure (CMake)
-        shell: cmd
-        run: |
-          mkdir build-arm64
-          cd build-arm64
-          cmake .. ^
-            -G Ninja ^
-            -DCMAKE_BUILD_TYPE=Release ^
-            -DCMAKE_PREFIX_PATH=C:\Qt-static-arm64 ^
-            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded ^
-            -DCMAKE_SYSTEM_NAME=Windows ^
-            -DCMAKE_SYSTEM_PROCESSOR=ARM64
-
-      - name: Build
-        shell: cmd
-        run: cd build-arm64 && cmake --build . --parallel 4
-
-      - name: Collect artifact
-        shell: pwsh
-        run: |
-          $exe = "build-arm64\OpenMTR.exe"
-          Write-Host "Velikost: $([math]::Round((Get-Item $exe).Length/1MB,2)) MB"
-          Copy-Item $exe OpenMTR-ARM64.exe
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: OpenMTR-ARM64
-          path: OpenMTR-ARM64.exe
-
-  # ── ARM64 smoke test ─────────────────────────────────────────────────────────
-  test-arm64:
-    needs: build-arm64
-    runs-on: windows-11-arm
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: OpenMTR-ARM64
-
-      - name: Verify PE architecture
-        shell: pwsh
-        run: |
-          $bytes = [IO.File]::ReadAllBytes("OpenMTR-ARM64.exe")
-          $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
-          $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
-          if ($machine -eq 0xAA64) {
-            Write-Host "OK: ARM64 binárka potvrzena (machine type 0xAA64)"
-          } else {
-            throw "CHYBA: Neočekávaný machine type: 0x$($machine.ToString('X4'))"
-          }
-
-      - name: Smoke test — spustit a ověřit start
-        shell: pwsh
-        run: |
-          $proc = Start-Process ".\OpenMTR-ARM64.exe" -PassThru
-          Start-Sleep 4
-          if (-not $proc.HasExited) {
-            $proc.Kill()
-            Write-Host "OK: Aplikace nastartovala a běžela na ARM64 hardwaru"
-          } else {
-            throw "CHYBA: Aplikace okamžitě spadla (exit code: $($proc.ExitCode))"
-          }
-
-  # ── Release při tagu v*.*.* ──────────────────────────────────────────────────
-  release:
-    needs: [build-amd64, build-arm64, test-arm64]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*.exe
-          generate_release_notes: true
+    # 6. Nahrání hotového .exe souboru na GitHub
+    - name: Upload Build Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: OpenMTR-Windows-${{ matrix.arch }}
+        path: |
+          build/Release/OpenMTR-${{ matrix.arch }}.exe
+          build/OpenMTR-${{ matrix.arch }}.exe
