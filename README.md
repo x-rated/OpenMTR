@@ -58,31 +58,28 @@ Date    : 2026-03-20 00:28:43
 - **Instant close** — the app exits immediately at any time; background threads are stopped asynchronously without blocking the UI
 - **HiDPI aware** — Per-Monitor V2 DPI aware for crisp rendering on high-DPI and mixed-DPI setups
 
-<br>
-
-> [!WARNING]
-> **OpenMTR is not code signed.** Free signing services ([SignPath Foundation](https://signpath.org) and [OSSign](https://ossign.org)) require a minimum project history of 6 months before accepting new projects.
->
-> As a result, some antivirus engines may flag the executable as suspicious due to [Enigma Virtual Box](https://enigmaprotector.com/en/aboutvb.html) packing, which is used to bundle Qt6 runtime DLLs into a single portable executable. This is a false positive — the source code is fully available for review at this repository, and the build is fully reproducible via the [GitHub Actions workflow](.github/workflows/build.yml).
-
 ---
 
 ## Requirements
 
 - Windows 10 22H2+ (Windows 11 recommended for full Mica/DWM effects)
-- Qt 6.11.1+ with `msvc2022_64` kit
-- Visual Studio 2022 with C++20 support
+- AMD64 or ARM64 processor
 
 ---
 
 ## Building
 
-1. Install [Qt 6.11.1+](https://www.qt.io/download) with the `msvc2022_64` component
-2. If not using the `QT_ROOT_DIR` environment variable, update `QtDir` in `OpenMTR.vcxproj` to match your Qt installation path
-3. Open `OpenMTR.sln` in Visual Studio 2022
-4. Build → **Release x64**
+The project uses CMake and statically linked Qt 6.11.1 (no Qt installation required for releases).
 
-Releases are also built automatically via GitHub Actions on every push.
+1. Install [Qt 6.11.1+](https://www.qt.io/download) with the `msvc2022_64` kit and the `Qt SVG` module
+2. Install Visual Studio 2022 with C++20 support
+3. Configure and build:
+   ```
+   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=<Qt install path>
+   cmake --build build
+   ```
+
+Releases are built automatically via GitHub Actions on every push — AMD64 and ARM64 binaries are produced in parallel.
 
 ---
 
