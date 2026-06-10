@@ -12,7 +12,7 @@ on:
 
 env:
   QT_VERSION: 6.11.1
-  QT_CACHE_KEY: v1
+  QT_CACHE_KEY: v2
 
 jobs:
   # ── Qt static AMD64 ──────────────────────────────────────────────────────────
@@ -50,6 +50,10 @@ jobs:
             "https://download.qt.io/official_releases/qt/6.11/${{ env.QT_VERSION }}/submodules/qtbase-everywhere-src-${{ env.QT_VERSION }}.zip" `
             -OutFile qtbase.zip -TimeoutSec 600
           Expand-Archive qtbase.zip -DestinationPath C:\Qt-src
+          Invoke-WebRequest `
+            "https://download.qt.io/official_releases/qt/6.11/${{ env.QT_VERSION }}/submodules/qtsvg-everywhere-src-${{ env.QT_VERSION }}.zip" `
+            -OutFile qtsvg.zip -TimeoutSec 300
+          Expand-Archive qtsvg.zip -DestinationPath C:\Qt-src
 
       - name: Configure Qt static (AMD64)
         if: steps.cache.outputs.cache-hit != 'true'
@@ -75,6 +79,20 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         shell: cmd
         run: cd C:\Qt-build && cmake --install .
+
+      - name: Build qtsvg (AMD64)
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          mkdir C:\Qt-build-svg
+          cd C:\Qt-build-svg
+          cmake C:\Qt-src\qtsvg-everywhere-src-${{ env.QT_VERSION }} ^
+            -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_PREFIX_PATH=C:\Qt-static ^
+            -DCMAKE_INSTALL_PREFIX=C:\Qt-static
+          cmake --build . --parallel 4
+          cmake --install .
 
       - name: Save cache
         if: steps.cache.outputs.cache-hit != 'true'
@@ -127,6 +145,10 @@ jobs:
             "https://download.qt.io/official_releases/qt/6.11/${{ env.QT_VERSION }}/submodules/qtbase-everywhere-src-${{ env.QT_VERSION }}.zip" `
             -OutFile qtbase.zip -TimeoutSec 600
           Expand-Archive qtbase.zip -DestinationPath C:\Qt-src
+          Invoke-WebRequest `
+            "https://download.qt.io/official_releases/qt/6.11/${{ env.QT_VERSION }}/submodules/qtsvg-everywhere-src-${{ env.QT_VERSION }}.zip" `
+            -OutFile qtsvg.zip -TimeoutSec 300
+          Expand-Archive qtsvg.zip -DestinationPath C:\Qt-src
 
       - name: Configure Qt static (ARM64)
         if: steps.cache.outputs.cache-hit != 'true'
@@ -154,6 +176,23 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         shell: cmd
         run: cd C:\Qt-build-arm64 && cmake --install .
+
+      - name: Build qtsvg (ARM64)
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          mkdir C:\Qt-build-svg-arm64
+          cd C:\Qt-build-svg-arm64
+          cmake C:\Qt-src\qtsvg-everywhere-src-${{ env.QT_VERSION }} ^
+            -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_PREFIX_PATH=C:\Qt-static-arm64 ^
+            -DCMAKE_INSTALL_PREFIX=C:\Qt-static-arm64 ^
+            -DCMAKE_SYSTEM_NAME=Windows ^
+            -DCMAKE_SYSTEM_PROCESSOR=ARM64 ^
+            -DQT_HOST_PATH=C:\Qt-static
+          cmake --build . --parallel 4
+          cmake --install .
 
       - name: Save cache
         if: steps.cache.outputs.cache-hit != 'true'
