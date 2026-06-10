@@ -12,13 +12,10 @@ on:
 
 env:
   QT_VERSION: 6.11.1
-  # Zvedni při změně configure flagů → vynutí rebuild Qt cache
-  QT_CACHE_KEY: v1
+  QT_CACHE_KEY: v3
 
 jobs:
-  # ────────────────────────────────────────────────────────────────────────────
-  # Qt static cache — builduje se jen pokud cache chybí.
-  # ────────────────────────────────────────────────────────────────────────────
+  # ── Qt static AMD64 ────────────────────────────────────────────────────────
   qt-static-amd64:
     runs-on: windows-latest
     steps:
@@ -40,6 +37,10 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install Ninja
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: choco install ninja -y
+
       - name: Download Qt source
         if: steps.cache.outputs.cache-hit != 'true'
         shell: pwsh
@@ -49,21 +50,33 @@ jobs:
             -OutFile qtbase.zip -TimeoutSec 600
           Expand-Archive qtbase.zip -DestinationPath C:\Qt-src
 
+      - name: Configure Qt static (AMD64)
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          mkdir C:\Qt-build
+          cd C:\Qt-build
+          C:\Qt-src\qtbase-everywhere-src-${{ env.QT_VERSION }}\configure.bat ^
+            -prefix C:\Qt-static ^
+            -release -static -static-runtime ^
+            -platform win32-msvc ^
+            -opengl desktop ^
+            -c++std c++20 ^
+            -nomake examples -nomake tests ^
+            -confirm-license -opensource
+
       - name: Build Qt static (AMD64)
         if: steps.cache.outputs.cache-hit != 'true'
         shell: cmd
         run: |
-          mkdir C:\Qt-build && cd C:\Qt-build
-          C:\Qt-src\qtbase-everywhere-src-${{ env.QT_VERSION }}\configure.bat ^
-            -prefix C:\Qt-static ^
-            -release -static -static-runtime ^
-            -platform win32-msvc -opengl desktop ^
-            -c++std c++20 ^
-            -nomake examples -nomake tests ^
-            -make libs ^
-            -no-dbus -no-sql-sqlite -no-sql-odbc ^
-            -- -DCMAKE_BUILD_PARALLEL_LEVEL=4
+          cd C:\Qt-build
           cmake --build . --parallel 4
+
+      - name: Install Qt static (AMD64)
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          cd C:\Qt-build
           cmake --install .
 
       - name: Save cache
@@ -73,7 +86,11 @@ jobs:
           path: C:\Qt-static
           key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
 
+  # ── Qt static ARM64 (cross-compile z AMD64) ────────────────────────────────
+  # Qt cross-compile vyžaduje nejdřív host build (moc, rcc, atd.)
+  # Proto závisí na qt-static-amd64 a použije ho jako qt-host-path.
   qt-static-arm64:
+    needs: qt-static-amd64
     runs-on: windows-latest
     steps:
       - name: Check cache
@@ -84,6 +101,15 @@ jobs:
           key: qt-static-${{ env.QT_VERSION }}-arm64-${{ env.QT_CACHE_KEY }}
           lookup-only: true
 
+      - name: Restore AMD64 Qt (host tools pro cross-compile)
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: C:\Qt-static
+          key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
+          fail-on-cache-miss: true
+
+      # amd64_arm64 = cross-compile toolchain: kompiluje AMD64 hostu → ARM64 target
       - uses: ilammy/msvc-dev-cmd@v1
         if: steps.cache.outputs.cache-hit != 'true'
         with:
@@ -94,6 +120,10 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install Ninja
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: choco install ninja -y
+
       - name: Download Qt source
         if: steps.cache.outputs.cache-hit != 'true'
         shell: pwsh
@@ -103,23 +133,35 @@ jobs:
             -OutFile qtbase.zip -TimeoutSec 600
           Expand-Archive qtbase.zip -DestinationPath C:\Qt-src
 
-      - name: Build Qt static (ARM64 cross-compile)
+      - name: Configure Qt static (ARM64 cross-compile)
         if: steps.cache.outputs.cache-hit != 'true'
         shell: cmd
         run: |
-          mkdir C:\Qt-build-arm64 && cd C:\Qt-build-arm64
+          mkdir C:\Qt-build-arm64
+          cd C:\Qt-build-arm64
           C:\Qt-src\qtbase-everywhere-src-${{ env.QT_VERSION }}\configure.bat ^
             -prefix C:\Qt-static-arm64 ^
+            -qt-host-path C:\Qt-static ^
             -release -static -static-runtime ^
-            -platform win32-msvc -opengl desktop ^
+            -platform win32-msvc ^
+            -opengl desktop ^
             -c++std c++20 ^
             -nomake examples -nomake tests ^
-            -make libs ^
-            -no-dbus -no-sql-sqlite -no-sql-odbc ^
-            -- -DCMAKE_BUILD_PARALLEL_LEVEL=4 ^
-               -DCMAKE_SYSTEM_NAME=Windows ^
-               -DCMAKE_SYSTEM_PROCESSOR=ARM64
+            -confirm-license -opensource ^
+            -- -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=ARM64
+
+      - name: Build Qt static (ARM64)
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          cd C:\Qt-build-arm64
           cmake --build . --parallel 4
+
+      - name: Install Qt static (ARM64)
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          cd C:\Qt-build-arm64
           cmake --install .
 
       - name: Save cache
@@ -129,17 +171,14 @@ jobs:
           path: C:\Qt-static-arm64
           key: qt-static-${{ env.QT_VERSION }}-arm64-${{ env.QT_CACHE_KEY }}
 
-  # ────────────────────────────────────────────────────────────────────────────
-  # AMD64 build
-  # ────────────────────────────────────────────────────────────────────────────
+  # ── AMD64 build ────────────────────────────────────────────────────────────
   build-amd64:
     needs: qt-static-amd64
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Restore Qt static (AMD64)
-        uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v4
         with:
           path: C:\Qt-static
           key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
@@ -166,24 +205,20 @@ jobs:
           name: OpenMTR-AMD64
           path: OpenMTR-AMD64.exe
 
-  # ────────────────────────────────────────────────────────────────────────────
-  # ARM64 build (cross-compile na windows-latest, stejně jako dosud)
-  # ────────────────────────────────────────────────────────────────────────────
+  # ── ARM64 build ────────────────────────────────────────────────────────────
   build-arm64:
     needs: qt-static-arm64
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Restore Qt static (ARM64 libs)
-        uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v4
         with:
           path: C:\Qt-static-arm64
           key: qt-static-${{ env.QT_VERSION }}-arm64-${{ env.QT_CACHE_KEY }}
           fail-on-cache-miss: true
 
-      - name: Restore Qt static (AMD64 host tools — moc.exe, rcc.exe)
-        uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v4
         with:
           path: C:\Qt-static
           key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
@@ -196,9 +231,11 @@ jobs:
       - uses: microsoft/setup-msbuild@v2
 
       - name: Build Release ARM64
+        shell: cmd
         run: |
           msbuild OpenMTR.sln ^
-            /p:Configuration=Release /p:Platform=ARM64 ^
+            /p:Configuration=Release ^
+            /p:Platform=ARM64 ^
             /p:QT_ROOT_DIR="C:\Qt-static-arm64" ^
             /p:QT_HOST_DIR="C:\Qt-static" ^
             /m
@@ -215,9 +252,7 @@ jobs:
           name: OpenMTR-ARM64
           path: OpenMTR-ARM64.exe
 
-  # ────────────────────────────────────────────────────────────────────────────
-  # Release při tagu v*.*.*
-  # ────────────────────────────────────────────────────────────────────────────
+  # ── Release při tagu v*.*.* ────────────────────────────────────────────────
   release:
     needs: [build-amd64, build-arm64]
     runs-on: ubuntu-latest
@@ -225,8 +260,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
