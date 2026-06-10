@@ -6,6 +6,12 @@
 #include <winsock2.h>
 #pragma comment(lib, "ws2_32.lib")
 
+// Static Qt build: musíme explicitně importovat platform + style plugin,
+// jinak linker vyhodí "no QPA platform" chybu za běhu.
+#include <QtPlugin>
+Q_IMPORT_PLUGIN(QWindowsIntegrationPlugin)
+Q_IMPORT_PLUGIN(QModernWindowsStylePlugin)
+
 int main(int argc, char* argv[])
 {
     // Initialise Winsock once for the lifetime of the process.

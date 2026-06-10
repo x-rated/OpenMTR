@@ -94,7 +94,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
       <AdditionalLibraryDirectories>$(QtDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>Qt6Widgets.lib;Qt6Core.lib;Qt6Gui.lib;Qt6EntryPoint.lib;dwmapi.lib;ws2_32.lib;Iphlpapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Qt6Widgets.lib;Qt6Core.lib;Qt6Gui.lib;Qt6EntryPoint.lib;Qt6BundledLibpng.lib;Qt6BundledHarfbuzz.lib;Qt6BundledFreetype.lib;Qt6BundledPcre2.lib;Qt6BundledZlib.lib;qwindows.lib;qmodernwindowsstyle.lib;dwmapi.lib;ws2_32.lib;Iphlpapi.lib;uxtheme.lib;comdlg32.lib;oleaut32.lib;ole32.lib;uuid.lib;shell32.lib;user32.lib;gdi32.lib;advapi32.lib;winmm.lib;imm32.lib;winspool.lib;shlwapi.lib;version.lib;netapi32.lib;userenv.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
 
@@ -137,7 +137,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
       <AdditionalLibraryDirectories>$(QtDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>Qt6Widgets.lib;Qt6Core.lib;Qt6Gui.lib;Qt6EntryPoint.lib;dwmapi.lib;ws2_32.lib;Iphlpapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Qt6Widgets.lib;Qt6Core.lib;Qt6Gui.lib;Qt6EntryPoint.lib;Qt6BundledLibpng.lib;Qt6BundledHarfbuzz.lib;Qt6BundledFreetype.lib;Qt6BundledPcre2.lib;Qt6BundledZlib.lib;qwindows.lib;qmodernwindowsstyle.lib;dwmapi.lib;ws2_32.lib;Iphlpapi.lib;uxtheme.lib;comdlg32.lib;oleaut32.lib;ole32.lib;uuid.lib;shell32.lib;user32.lib;gdi32.lib;advapi32.lib;winmm.lib;imm32.lib;winspool.lib;shlwapi.lib;version.lib;netapi32.lib;userenv.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
 
