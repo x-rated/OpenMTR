@@ -12,7 +12,7 @@ on:
 
 env:
   QT_VERSION: 6.11.1
-  QT_CACHE_KEY: v2
+  QT_CACHE_KEY: v3
 
 jobs:
   # ── Qt static AMD64 ──────────────────────────────────────────────────────────
@@ -86,7 +86,9 @@ jobs:
             -G Ninja ^
             -DCMAKE_BUILD_TYPE=Release ^
             -DCMAKE_PREFIX_PATH=C:\Qt-static ^
-            -DCMAKE_INSTALL_PREFIX=C:\Qt-static
+            -DQt6_DIR=C:\Qt-static\lib\cmake\Qt6 ^
+            -DCMAKE_INSTALL_PREFIX=C:\Qt-static ^
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           cmake --build . --parallel 4
           cmake --install .
 
@@ -179,7 +181,9 @@ jobs:
             -G Ninja ^
             -DCMAKE_BUILD_TYPE=Release ^
             -DCMAKE_PREFIX_PATH=C:\Qt-static-arm64 ^
+            -DQt6_DIR=C:\Qt-static-arm64\lib\cmake\Qt6 ^
             -DCMAKE_INSTALL_PREFIX=C:\Qt-static-arm64 ^
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded ^
             -DCMAKE_SYSTEM_NAME=Windows ^
             -DCMAKE_SYSTEM_PROCESSOR=ARM64 ^
             -DQT_HOST_PATH=C:\Qt-static
