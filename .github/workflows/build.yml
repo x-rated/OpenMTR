@@ -12,7 +12,7 @@ on:
 
 env:
   QT_VERSION: 6.11.1
-  QT_CACHE_KEY: v3
+  QT_CACHE_KEY: v4
 
 jobs:
   # ── Qt static AMD64 ──────────────────────────────────────────────────────────
