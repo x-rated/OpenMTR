@@ -32,7 +32,7 @@ static const QStringList COLUMNS = {
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
-    setWindowTitle("OpenMTR v1.0.0");
+    setWindowTitle("OpenMTR v1.1.0");
     setMinimumSize(1000, 420);
     resize(1200, 650);
     setWindowIcon(QIcon(":/app.ico"));
@@ -467,7 +467,7 @@ void MainWindow::onStartStop()
         m_targetEdit->setEnabled(true);
         m_ipv6Check->setEnabled(true);
         m_pingSizeBox->setEnabled(true);
-        setWindowTitle("OpenMTR v1.0.0");
+        setWindowTitle("OpenMTR v1.1.0");
         if (m_net) updateTable();
         m_baseline.clear();
         m_asnCache.clear();
@@ -581,7 +581,7 @@ void MainWindow::onElapsedTimer()
     QString elapsed = h > 0
         ? QString("%1:%2:%3").arg(h).arg(m,2,10,QChar('0')).arg(s,2,10,QChar('0'))
         : QString("%1:%2").arg(m).arg(s,2,10,QChar('0'));
-    setWindowTitle(QString("OpenMTR v1.0.0 — %1").arg(elapsed));
+    setWindowTitle(QString("OpenMTR v1.1.0 — %1").arg(elapsed));
 }
 
 void MainWindow::onWarmupEnd()
