@@ -190,6 +190,15 @@ jobs:
 
       - uses: microsoft/setup-msbuild@v2
 
+      - name: Find Qt plugin libs (diagnostika)
+        shell: pwsh
+        run: |
+          Write-Host "=== C:\Qt-static\lib\ (qwindows*) ==="
+          Get-ChildItem "C:\Qt-static\lib" -Filter "*windows*" -Recurse -ErrorAction SilentlyContinue | Select-Object FullName
+          Get-ChildItem "C:\Qt-static\lib" -Filter "*platform*" -Recurse -ErrorAction SilentlyContinue | Select-Object FullName
+          Write-Host "=== C:\Qt-static\plugins\ ==="
+          Get-ChildItem "C:\Qt-static\plugins" -Recurse -ErrorAction SilentlyContinue | Select-Object FullName
+
       - name: Build Release AMD64
         run: msbuild OpenMTR.sln /p:Configuration=Release /p:Platform=x64 /p:QT_ROOT_DIR="C:\Qt-static" /m
 
