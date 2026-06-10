@@ -12,7 +12,7 @@ on:
 
 env:
   QT_VERSION: 6.11.1
-  QT_CACHE_KEY: v5
+  QT_CACHE_KEY: v6
 
 jobs:
   # ── Qt static AMD64 ──────────────────────────────────────────────────────────
@@ -84,6 +84,7 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         shell: cmd
         run: |
+          if exist C:\Qt-build-svg rmdir /s /q C:\Qt-build-svg
           mkdir C:\Qt-build-svg
           cd C:\Qt-build-svg
           cmake C:\Qt-src\qtsvg-everywhere-src-${{ env.QT_VERSION }} ^
@@ -183,6 +184,7 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         shell: cmd
         run: |
+          if exist C:\Qt-build-svg-arm64 rmdir /s /q C:\Qt-build-svg-arm64
           mkdir C:\Qt-build-svg-arm64
           cd C:\Qt-build-svg-arm64
           cmake C:\Qt-src\qtsvg-everywhere-src-${{ env.QT_VERSION }} ^
