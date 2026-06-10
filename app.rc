@@ -1,4 +1,4 @@
-// app.rc — embeds app.ico and version metadata into the executable
+// app.rc -- embeds app.ico and version metadata into the executable
 #include <windows.h>
 
 IDI_APPICON ICON "app.ico"
@@ -17,7 +17,7 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "CompanyName",      "Rudolf Slambera"
-            VALUE "FileDescription",  "OpenMTR — Network Diagnostic Tool"
+            VALUE "FileDescription",  "OpenMTR - Network Diagnostic Tool"
             VALUE "FileVersion",      "1.1.0.0"
             VALUE "InternalName",     "OpenMTR"
             VALUE "LegalCopyright",   "GPL v2"
