@@ -13,7 +13,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Definujeme obě architektury, které požaduješ
         include:
           - arch: amd64
             qt_arch: win64_msvc2022_64
@@ -26,23 +25,22 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # 1. Instalace správné verze Qt6 podle architektury v matrixu
+    # 1. Instalace Qt6 - odstraněn problematický modul 'qtsvg'
     - name: Install Qt6
       uses: jurplel/install-qt-action@v3
       with:
-        version: '6.8.2' # Používáme stabilní LTS verzi s plnou podporou ARM64
+        version: '6.8.2'
         host: 'windows'
         target: 'desktop'
         arch: ${{ matrix.qt_arch }}
-        modules: 'qtsvg'
 
-    # 2. Nastavení MSVC kompilátoru pro cross-kompilaci (zejména důležité pro arm64)
+    # 2. Nastavení MSVC kompilátoru
     - name: Set up MSVC Developer Command Prompt
       uses: ilammy/msvc-dev-cmd@v1
       with:
         arch: ${{ matrix.msvc_arch }}
 
-    # 3. Konfigurace CMake s předáním architektury
+    # 3. Konfigurace CMake
     - name: Configure CMake
       run: |
         cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_PROCESSOR=${{ matrix.arch }}
@@ -52,7 +50,7 @@ jobs:
       run: |
         cmake --build build --config Release
 
-    # 5. Přejmenování výsledného exe souboru, aby se nespletly (přidá -amd64 nebo -arm64)
+    # 5. Přejmenování výsledného exe souboru podle architektury
     - name: Rename executable
       shell: pwsh
       run: |
