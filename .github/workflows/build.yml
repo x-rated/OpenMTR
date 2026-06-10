@@ -67,7 +67,6 @@ jobs:
             -platform win32-msvc ^
             -opengl desktop ^
             -c++std c++20 ^
-            -submodules qtsvg ^
             -nomake examples -nomake tests ^
             -confirm-license -opensource
 
@@ -80,6 +79,20 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         shell: cmd
         run: cd C:\Qt-build && cmake --install .
+
+      - name: Build and install qtsvg (AMD64)
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          cmake -S C:\Qt-src\qtsvg-everywhere-src-${{ env.QT_VERSION }} ^
+                -B C:\Qt-build-svg ^
+                -G Ninja ^
+                -DCMAKE_BUILD_TYPE=Release ^
+                -DCMAKE_PREFIX_PATH=C:\Qt-static ^
+                -DCMAKE_INSTALL_PREFIX=C:\Qt-static ^
+                -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          cmake --build C:\Qt-build-svg --parallel 4
+          cmake --install C:\Qt-build-svg
 
       - name: Save cache
         if: steps.cache.outputs.cache-hit != 'true'
@@ -150,7 +163,6 @@ jobs:
             -platform win32-msvc ^
             -opengl desktop ^
             -c++std c++20 ^
-            -submodules qtsvg ^
             -nomake examples -nomake tests ^
             -confirm-license -opensource ^
             -- -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=ARM64
@@ -164,6 +176,23 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         shell: cmd
         run: cd C:\Qt-build-arm64 && cmake --install .
+
+      - name: Build and install qtsvg (ARM64)
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          cmake -S C:\Qt-src\qtsvg-everywhere-src-${{ env.QT_VERSION }} ^
+                -B C:\Qt-build-svg-arm64 ^
+                -G Ninja ^
+                -DCMAKE_BUILD_TYPE=Release ^
+                -DCMAKE_PREFIX_PATH=C:\Qt-static-arm64 ^
+                -DCMAKE_INSTALL_PREFIX=C:\Qt-static-arm64 ^
+                -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded ^
+                -DCMAKE_SYSTEM_NAME=Windows ^
+                -DCMAKE_SYSTEM_PROCESSOR=ARM64 ^
+                -DQT_HOST_PATH=C:\Qt-static
+          cmake --build C:\Qt-build-svg-arm64 --parallel 4
+          cmake --install C:\Qt-build-svg-arm64
 
       - name: Save cache
         if: steps.cache.outputs.cache-hit != 'true'
