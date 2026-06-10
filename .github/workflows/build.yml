@@ -12,7 +12,7 @@ on:
 
 env:
   QT_VERSION: 6.11.1
-  QT_CACHE_KEY: v8
+  QT_CACHE_KEY: v2
 
 jobs:
   # ── Qt static AMD64 ──────────────────────────────────────────────────────────
@@ -75,15 +75,11 @@ jobs:
         shell: cmd
         run: cd C:\Qt-build && cmake --build . --parallel 4
 
-      - name: Install Qt static (AMD64)
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: cmd
-        run: cd C:\Qt-build && cmake --install .
-
-      - name: Build and install qtsvg (AMD64)
+      - name: Install Qt static + build qtsvg (AMD64)
         if: steps.cache.outputs.cache-hit != 'true'
         shell: cmd
         run: |
+          cmake --install C:\Qt-build
           cmake -S C:\Qt-src\qtsvg-everywhere-src-${{ env.QT_VERSION }} ^
                 -B C:\Qt-build-svg ^
                 -G Ninja ^
@@ -172,15 +168,11 @@ jobs:
         shell: cmd
         run: cd C:\Qt-build-arm64 && cmake --build . --parallel 4
 
-      - name: Install Qt static (ARM64)
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: cmd
-        run: cd C:\Qt-build-arm64 && cmake --install .
-
-      - name: Build and install qtsvg (ARM64)
+      - name: Install Qt static + build qtsvg (ARM64)
         if: steps.cache.outputs.cache-hit != 'true'
         shell: cmd
         run: |
+          cmake --install C:\Qt-build-arm64
           cmake -S C:\Qt-src\qtsvg-everywhere-src-${{ env.QT_VERSION }} ^
                 -B C:\Qt-build-svg-arm64 ^
                 -G Ninja ^
