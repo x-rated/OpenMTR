@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Svg)
 
 qt_add_executable(OpenMTR
     main.cpp
@@ -22,10 +22,12 @@ qt_add_executable(OpenMTR
 qt_import_plugins(OpenMTR
     INCLUDE Qt6::QWindowsIntegrationPlugin
     INCLUDE Qt6::QModernWindowsStylePlugin
+    INCLUDE Qt6::QSvgPlugin
 )
 
 target_link_libraries(OpenMTR PRIVATE
     Qt6::Widgets
+    Qt6::Svg
     ws2_32
     Iphlpapi
 )
