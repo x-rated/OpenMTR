@@ -4,10 +4,8 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <winsock2.h>
-#pragma comment(lib, "ws2_32.lib")
 
-// Static Qt build: musíme explicitně importovat platform + style plugin,
-// jinak linker vyhodí "no QPA platform" chybu za běhu.
+// Statický Qt build: explicitně importovat platform + style plugin
 #include <QtPlugin>
 Q_IMPORT_PLUGIN(QWindowsIntegrationPlugin)
 Q_IMPORT_PLUGIN(QModernWindowsStylePlugin)
