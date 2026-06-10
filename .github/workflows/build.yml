@@ -23,11 +23,9 @@ jobs:
           - arch: amd64
             runner: windows-latest
             prefix: C:\Qt-static
-            msvc_arch: amd64
           - arch: arm64
             runner: windows-11-arm
             prefix: C:\Qt-static
-            msvc_arch: arm64
 
     runs-on: ${{ matrix.runner }}
     name: Qt static cache (${{ matrix.arch }})
@@ -44,7 +42,7 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: ${{ matrix.msvc_arch }}
+          arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'amd64' }}
 
       - name: Install Ninja
         if: steps.cache.outputs.cache-hit != 'true'
@@ -95,7 +93,7 @@ jobs:
                 -DCMAKE_PREFIX_PATH=${{ matrix.prefix }} ^
                 -DCMAKE_INSTALL_PREFIX=${{ matrix.prefix }} ^
                 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
-          cmake --build C:\Qt-build-svg --parallel 8
+          cmake --build C:\Qt-build-svg --parallel 4
           cmake --install C:\Qt-build-svg
 
   # ── Build aplikace ─────────────────────────────────────────────────────────
@@ -108,12 +106,10 @@ jobs:
             runner: windows-latest
             prefix: C:\Qt-static
             artifact: OpenMTR-AMD64.exe
-            msvc_arch: amd64
           - arch: arm64
             runner: windows-11-arm
             prefix: C:\Qt-static
             artifact: OpenMTR-ARM64.exe
-            msvc_arch: arm64
 
     runs-on: ${{ matrix.runner }}
     name: Build (${{ matrix.arch }})
@@ -126,12 +122,12 @@ jobs:
         with:
           path: ${{ matrix.prefix }}
           key: qt-static-${{ env.QT_VERSION }}-${{ matrix.arch }}-${{ env.QT_CACHE_SUFFIX }}
-          fail-on-cache-miss: true
+          fail-on-cache-miss: false
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: ${{ matrix.msvc_arch }}
+          arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'amd64' }}
 
       - name: Configure
         shell: cmd
@@ -144,7 +140,7 @@ jobs:
 
       - name: Build
         shell: cmd
-        run: cmake --build build --parallel 8
+        run: cmake --build build --parallel 4
 
       - name: Rename exe
         shell: pwsh
@@ -160,7 +156,7 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
 
