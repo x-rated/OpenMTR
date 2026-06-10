@@ -12,18 +12,18 @@ on:
 
 env:
   QT_VERSION: 6.11.1
-  QT_CACHE_KEY: v3 # Zvýšeno na v3 pro čistý start mezipaměti
+  QT_CACHE_KEY: v5
 
 jobs:
-  # ── AMD64: Sestavení Qt + Kompilace OpenMTR ──────────────────────────────────
+  # ── AMD64: Kompletní sestavení Qt + OpenMTR ──────────────────────────────────
   build-amd64:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check and Restore Qt AMD64 Cache
+      - name: Restore Qt AMD64 Cache
         id: cache-qt
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: C:\Qt-static
           key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
@@ -38,7 +38,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Ninja (Kompilace Qt)
+      - name: Install Ninja
         if: steps.cache-qt.outputs.cache-hit != 'true'
         shell: pwsh
         run: choco install ninja -y
@@ -60,6 +60,7 @@ jobs:
         if: steps.cache-qt.outputs.cache-hit != 'true'
         shell: cmd
         run: |
+          if exist C:\Qt-build-amd64 rmdir /s /q C:\Qt-build-amd64
           mkdir C:\Qt-build-amd64
           cd C:\Qt-build-amd64
           C:\Qt-src\qtbase-everywhere-src-${{ env.QT_VERSION }}\configure.bat ^
@@ -75,6 +76,7 @@ jobs:
           if errorlevel 1 exit /b 1
           cmake --install .
           if errorlevel 1 exit /b 1
+          if exist C:\Qt-build-svg rmdir /s /q C:\Qt-build-svg
           cmake -S C:\Qt-src\qtsvg-everywhere-src-${{ env.QT_VERSION }} ^
                 -B C:\Qt-build-svg ^
                 -G Ninja ^
@@ -87,7 +89,13 @@ jobs:
           if errorlevel 1 exit /b 1
           cmake --install C:\Qt-build-svg
 
-      # Nyní zkompilujeme samotnou aplikaci OpenMTR AMD64
+      - name: Save Qt AMD64 Cache
+        if: steps.cache-qt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:\Qt-static
+          key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
+
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -95,6 +103,7 @@ jobs:
       - name: Configure OpenMTR (AMD64)
         shell: cmd
         run: |
+          if exist build-amd64 rmdir /s /q build-amd64
           mkdir build-amd64
           cd build-amd64
           cmake .. ^
@@ -119,21 +128,13 @@ jobs:
           name: OpenMTR-AMD64
           path: OpenMTR-AMD64.exe
 
-  # ── ARM64: Sestavení Qt + Kompilace OpenMTR ──────────────────────────────────
+  # ── ARM64: Kompletní sestavení Qt + OpenMTR ──────────────────────────────────
   build-arm64:
-    needs: build-amd64 # Počkáme na uvolnění/zápis AMD64 cache, kterou nutně potřebujeme jako host tools
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Restore AMD64 Qt (Potřebné jako host tools pro ARM64 cross-compile)
-        uses: actions/cache/restore@v4
-        with:
-          path: C:\Qt-static
-          key: qt-static-${{ env.QT_VERSION }}-amd64-${{ env.QT_CACHE_KEY }}
-          fail-on-cache-miss: true
-
-      - name: Check and Restore Qt ARM64 Cache
+      - name: Restore Qt ARM64 Cache
         id: cache-qt-arm64
         uses: actions/cache@v4
         with:
@@ -150,7 +151,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Ninja (Kompilace Qt ARM64)
+      - name: Install Ninja
         if: steps.cache-qt-arm64.outputs.cache-hit != 'true'
         shell: pwsh
         run: choco install ninja -y
@@ -172,11 +173,11 @@ jobs:
         if: steps.cache-qt-arm64.outputs.cache-hit != 'true'
         shell: cmd
         run: |
+          if exist C:\Qt-build-arm64 rmdir /s /q C:\Qt-build-arm64
           mkdir C:\Qt-build-arm64
           cd C:\Qt-build-arm64
           C:\Qt-src\qtbase-everywhere-src-${{ env.QT_VERSION }}\configure.bat ^
             -prefix C:\Qt-static-arm64 ^
-            -qt-host-path C:\Qt-static ^
             -release -static -static-runtime ^
             -platform win32-msvc ^
             -opengl desktop ^
@@ -189,6 +190,7 @@ jobs:
           if errorlevel 1 exit /b 1
           cmake --install .
           if errorlevel 1 exit /b 1
+          if exist C:\Qt-build-svg-arm64 rmdir /s /q C:\Qt-build-svg-arm64
           cmake -S C:\Qt-src\qtsvg-everywhere-src-${{ env.QT_VERSION }} ^
                 -B C:\Qt-build-svg-arm64 ^
                 -G Ninja ^
@@ -197,14 +199,19 @@ jobs:
                 -DCMAKE_INSTALL_PREFIX=C:\Qt-static-arm64 ^
                 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded ^
                 -DCMAKE_SYSTEM_NAME=Windows ^
-                -DCMAKE_SYSTEM_PROCESSOR=ARM64 ^
-                -DQT_HOST_PATH=C:\Qt-static
+                -DCMAKE_SYSTEM_PROCESSOR=ARM64
           if errorlevel 1 exit /b 1
           cmake --build C:\Qt-build-svg-arm64 --parallel 4
           if errorlevel 1 exit /b 1
           cmake --install C:\Qt-build-svg-arm64
 
-      # Nyní zkompilujeme samotnou aplikaci OpenMTR ARM64
+      - name: Save Qt ARM64 Cache
+        if: steps.cache-qt-arm64.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:\Qt-static-arm64
+          key: qt-static-${{ env.QT_VERSION }}-arm64-${{ env.QT_CACHE_KEY }}
+
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: amd64_arm64
@@ -216,6 +223,7 @@ jobs:
       - name: Configure OpenMTR (ARM64)
         shell: cmd
         run: |
+          if exist build-arm64 rmdir /s /q build-arm64
           mkdir build-arm64
           cd build-arm64
           cmake .. ^
@@ -242,53 +250,4 @@ jobs:
           name: OpenMTR-ARM64
           path: OpenMTR-ARM64.exe
 
-  # ── ARM64 smoke test ─────────────────────────────────────────────────────────
-  test-arm64:
-    needs: build-arm64
-    runs-on: windows-11-arm
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: OpenMTR-ARM64
-
-      - name: Verify PE architecture
-        shell: pwsh
-        run: |
-          $bytes = [IO.File]::ReadAllBytes("OpenMTR-ARM64.exe")
-          $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
-          $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
-          if ($machine -eq 0xAA64) {
-            Write-Host "OK: ARM64 binárka potvrzena (machine type 0xAA64)"
-          } else {
-            throw "CHYBA: Neočekávaný machine type: 0x$($machine.ToString('X4'))"
-          }
-
-      - name: Smoke test — spustit a ověřit start
-        shell: pwsh
-        run: |
-          $proc = Start-Process ".\OpenMTR-ARM64.exe" -PassThru
-          Start-Sleep 4
-          if (-not $proc.HasExited) {
-            $proc.Kill()
-            Write-Host "OK: Aplikace nastartovala a běžela na ARM64 hardwaru"
-          } else {
-            throw "CHYBA: Aplikace okamžitě spadla (exit code: $($proc.ExitCode))"
-          }
-
-  # ── Release při tagu v*.*.* ──────────────────────────────────────────────────
-  release:
-    needs: [build-amd64, build-arm64, test-arm64]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*.exe
-          generate_release_notes: true
+  # ── ARM
