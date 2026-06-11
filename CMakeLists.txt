@@ -18,16 +18,11 @@ qt_add_executable(OpenMTR
     app.rc
 )
 
-# Statický Qt: explicitně jen nutné pluginy, vše ostatní vyloučit
+# Statický Qt: musíme explicitně importovat platform + style plugin
 qt_import_plugins(OpenMTR
-    INCLUDE_BY_TYPE platforms Qt6::QWindowsIntegrationPlugin
-    INCLUDE_BY_TYPE styles   Qt6::QModernWindowsStylePlugin
-    INCLUDE_BY_TYPE imageformats Qt6::QSvgPlugin
-    EXCLUDE_BY_TYPE generic
-    EXCLUDE_BY_TYPE iconengines
-    EXCLUDE_BY_TYPE sqldrivers
-    EXCLUDE_BY_TYPE tls
-    EXCLUDE_BY_TYPE networkinformation
+    INCLUDE Qt6::QWindowsIntegrationPlugin
+    INCLUDE Qt6::QModernWindowsStylePlugin
+    INCLUDE Qt6::QSvgPlugin
 )
 
 target_link_libraries(OpenMTR PRIVATE
