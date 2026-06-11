@@ -88,7 +88,7 @@ Releases are built automatically via GitHub Actions on every push — AMD64 and 
 OpenMTR is built on the shoulders of:
 
 - **[WinMTR Redux](https://github.com/White-Tiger/WinMTR)** by White-Tiger — the network engine (IPv4/IPv6 ICMP tracing, per-hop statistics)
-- **[WinMTR](http://winmtr.net/)** by Vasile Laurentiu Stanimir / [Appnor MSP](http://www.appnor.com) (2000) — the original WinMTR
+- **[WinMTR](https://github.com/WinMTR/WinMTR-Official)** by Vasile Laurentiu Stanimir (2000) — the original WinMTR
 
 ---
 
