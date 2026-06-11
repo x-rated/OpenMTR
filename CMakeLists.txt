@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(OpenMTR VERSION 1.0.0 LANGUAGES CXX)
+project(OpenMTR VERSION 1.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -18,11 +18,16 @@ qt_add_executable(OpenMTR
     app.rc
 )
 
-# Statický Qt: musíme explicitně importovat platform + style plugin
+# Statický Qt: explicitně jen nutné pluginy, vše ostatní vyloučit
 qt_import_plugins(OpenMTR
-    INCLUDE Qt6::QWindowsIntegrationPlugin
-    INCLUDE Qt6::QModernWindowsStylePlugin
-    INCLUDE Qt6::QSvgPlugin
+    INCLUDE_BY_TYPE platforms Qt6::QWindowsIntegrationPlugin
+    INCLUDE_BY_TYPE styles   Qt6::QModernWindowsStylePlugin
+    INCLUDE_BY_TYPE imageformats Qt6::QSvgPlugin
+    EXCLUDE_BY_TYPE generic
+    EXCLUDE_BY_TYPE iconengines
+    EXCLUDE_BY_TYPE sqldrivers
+    EXCLUDE_BY_TYPE tls
+    EXCLUDE_BY_TYPE networkinformation
 )
 
 target_link_libraries(OpenMTR PRIVATE
