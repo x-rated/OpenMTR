@@ -16,90 +16,8 @@ env:
   QT_CACHE_SUFFIX: v1   # bump to force Qt rebuild
 
 jobs:
-  # ── Qt static cache ────────────────────────────────────────────────────────
-  qt-cache:
-    strategy:
-      matrix:
-        include:
-          - arch: amd64
-            runner: windows-latest
-            prefix: C:\Qt-static
-          - arch: arm64
-            runner: windows-11-arm
-            prefix: C:\Qt-static
-
-    runs-on: ${{ matrix.runner }}
-    name: Qt static cache (${{ matrix.arch }})
-
-    steps:
-      - name: Check cache
-        id: cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ matrix.prefix }}
-          key: qt-static-${{ env.QT_VERSION }}-${{ matrix.arch }}-${{ env.QT_CACHE_SUFFIX }}
-
-      - name: Setup MSVC
-        if: steps.cache.outputs.cache-hit != 'true'
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'amd64' }}
-
-      - name: Install Ninja
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: choco install ninja -y
-
-      - name: Download Qt source
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          $base = "https://download.qt.io/official_releases/qt/6.11/${{ env.QT_VERSION }}/submodules"
-          Invoke-WebRequest "$base/qtbase-everywhere-src-${{ env.QT_VERSION }}.zip" -OutFile qtbase.zip -TimeoutSec 600
-          Invoke-WebRequest "$base/qtsvg-everywhere-src-${{ env.QT_VERSION }}.zip"  -OutFile qtsvg.zip  -TimeoutSec 300
-          Expand-Archive qtbase.zip -DestinationPath C:\Qt-src
-          Expand-Archive qtsvg.zip  -DestinationPath C:\Qt-src
-
-      - name: Configure Qt static
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: cmd
-        run: |
-          C:\Qt-src\qtbase-everywhere-src-${{ env.QT_VERSION }}\configure.bat ^
-            -prefix ${{ matrix.prefix }} ^
-            -release -static -static-runtime ^
-            -platform win32-msvc ^
-            -opengl desktop ^
-            -c++std c++20 ^
-            -nomake examples -nomake tests ^
-            -confirm-license -opensource ^
-            -- -B C:\Qt-build
-
-      - name: Build Qt static
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: cmd
-        run: cmake --build C:\Qt-build --parallel 8
-
-      - name: Install Qt static
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: cmd
-        run: cmake --install C:\Qt-build
-
-      - name: Build Qt SVG
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: cmd
-        run: |
-          cmake -S C:\Qt-src\qtsvg-everywhere-src-${{ env.QT_VERSION }} ^
-                -B C:\Qt-build-svg ^
-                -G Ninja ^
-                -DCMAKE_BUILD_TYPE=Release ^
-                -DCMAKE_PREFIX_PATH=${{ matrix.prefix }} ^
-                -DCMAKE_INSTALL_PREFIX=${{ matrix.prefix }} ^
-                -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
-          cmake --build C:\Qt-build-svg --parallel 4
-          cmake --install C:\Qt-build-svg
-
-  # ── Build aplikace ─────────────────────────────────────────────────────────
+  # ── Build aplikace (Qt cache je součástí jobu) ─────────────────────────────
   build:
-    needs: qt-cache
     strategy:
       matrix:
         include:
@@ -117,18 +35,56 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Restore Qt cache
-        uses: actions/cache/restore@v4
+        id: qt-cache
+        uses: actions/cache@v4
         with:
           path: ${{ matrix.prefix }}
           key: qt-static-${{ env.QT_VERSION }}-${{ matrix.arch }}-${{ env.QT_CACHE_SUFFIX }}
-          fail-on-cache-miss: false
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'amd64' }}
+
+      - name: Install Ninja
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: choco install ninja -y
+
+      - name: Download Qt source
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $base = "https://download.qt.io/official_releases/qt/6.11/${{ env.QT_VERSION }}/submodules"
+          Invoke-WebRequest "$base/qtbase-everywhere-src-${{ env.QT_VERSION }}.zip" -OutFile qtbase.zip -TimeoutSec 600
+          Expand-Archive qtbase.zip -DestinationPath C:\Qt-src
+
+      - name: Configure Qt static
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          C:\Qt-src\qtbase-everywhere-src-${{ env.QT_VERSION }}\configure.bat ^
+            -prefix ${{ matrix.prefix }} ^
+            -release -static -static-runtime ^
+            -platform win32-msvc ^
+            -opengl desktop ^
+            -c++std c++20 ^
+            -nomake examples -nomake tests ^
+            -confirm-license -opensource ^
+            -- -B C:\Qt-build
+
+      - name: Build Qt static
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: cmake --build C:\Qt-build --parallel
+
+      - name: Install Qt static
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: cmake --install C:\Qt-build
 
       - name: Configure
         shell: cmd
@@ -141,7 +97,7 @@ jobs:
 
       - name: Build
         shell: cmd
-        run: cmake --build build --parallel 4
+        run: cmake --build build --parallel
 
       - name: Rename exe
         shell: pwsh
@@ -152,30 +108,3 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: build\${{ matrix.artifact }}
-
-  # ── Release ────────────────────────────────────────────────────────────────
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download AMD64
-        uses: actions/download-artifact@v4
-        with:
-          name: OpenMTR-AMD64.exe
-
-      - name: Download ARM64
-        uses: actions/download-artifact@v4
-        with:
-          name: OpenMTR-ARM64.exe
-
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            OpenMTR-AMD64.exe
-            OpenMTR-ARM64.exe
-          generate_release_notes: true
