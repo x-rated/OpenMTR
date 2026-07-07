@@ -1,11 +1,19 @@
-// app.rc -- embeds app.ico and version metadata into the executable
+// ===========================================================================
+//  app.rc.in — Windows resource script (template)
+//
+//  CMake's configure_file() expands the @...@ placeholders into app.rc at
+//  build time, embedding the icon and version info into the executable.
+// ===========================================================================
+
 #include <windows.h>
 
-IDI_APPICON ICON "app.ico"
+// Application icon (Explorer / taskbar).
+IDI_APPICON ICON "@CMAKE_CURRENT_SOURCE_DIR@/app_light.ico"
 
+// Version information block embedded in the .exe.
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     1,1,0,0
-PRODUCTVERSION  1,1,0,0
+FILEVERSION     @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+PRODUCTVERSION  @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
 FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
 FILEFLAGS       0
 FILEOS          VOS_NT_WINDOWS32
@@ -14,20 +22,22 @@ FILESUBTYPE     VFT2_UNKNOWN
 BEGIN
     BLOCK "StringFileInfo"
     BEGIN
+        // 0409 = US English, 04B0 = Unicode code page.
         BLOCK "040904B0"
         BEGIN
             VALUE "CompanyName",      "Rudolf Slambera"
             VALUE "FileDescription",  "OpenMTR - Network Diagnostic Tool"
-            VALUE "FileVersion",      "1.1.0.0"
+            VALUE "FileVersion",      "@PROJECT_VERSION@.0"
             VALUE "InternalName",     "OpenMTR"
             VALUE "LegalCopyright",   "GPL v2"
             VALUE "OriginalFilename", "OpenMTR.exe"
             VALUE "ProductName",      "OpenMTR"
-            VALUE "ProductVersion",   "1.1.0.0"
+            VALUE "ProductVersion",   "@PROJECT_VERSION@.0"
         END
     END
     BLOCK "VarFileInfo"
     BEGIN
+        // Must match the language/code-page used in the StringFileInfo block.
         VALUE "Translation", 0x0409, 0x04B0
     END
 END

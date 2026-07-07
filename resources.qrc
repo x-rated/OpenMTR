@@ -1,7 +1,9 @@
 <!DOCTYPE RCC>
+<!-- Qt resource bundle: embeds the light/dark application icons into the
+     executable so they can be loaded as :/app_light.ico and :/app_dark.ico. -->
 <RCC version="1.0">
     <qresource>
-        <file>app.ico</file>
-        <file>check.svg</file>
+        <file>app_light.ico</file>
+        <file>app_dark.ico</file>
     </qresource>
 </RCC>

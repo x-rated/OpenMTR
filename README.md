@@ -2,58 +2,66 @@
 
 A modern, lightweight network diagnostic tool for Windows that combines traceroute and ping into a single real-time view. Built with a clean Qt6 interface designed to feel native on Windows 11.
 
-![OpenMTR Screenshot](https://i.imgur.com/uIyV0Vy.jpg)
+![OpenMTR Screenshot](https://i.imgur.com/1Qqgne8.jpg)
 ```
 OpenMTR Export
 Target  : gov.bw
-Date    : 2026-03-20 00:28:43
+Date    : 2026-07-08 00:32:51
+Duration: 2:00
 
-+-------+---------+---------------------------------------------------------------+-------------------+---------+--------+--------+--------+--------+--------+--------+
-| Hop   | ASN     | Hostname                                                      | IP                | Loss %  | Sent   | Recv   | Best m | Avrg m | Wrst m | Last m |
-+-------+---------+---------------------------------------------------------------+-------------------+---------+--------+--------+--------+--------+--------+--------+
-| 1     | -       | RT-BE88U                                                      | 192.168.1.1       | 0       | 100    | 100    | 0      | 0      | 2      | 0      |
-| 2     | -       | 10.26.202.187                                                 | 10.26.202.187     | 0       | 100    | 100    | 1      | 1      | 3      | 2      |
-| 3     | 16019   | 217.77.171.154                                                | 217.77.171.154    | 98      | 101    | 3      | 2      | 2      | 2      | 2      |
-| 4     | 16019   | 217.77.171.153                                                | 217.77.171.153    | 11      | 101    | 90     | 2      | 3      | 6      | 3      |
-| 5     | 16019   | ispr00i-nixr00i-0.oskarmobil.cz                               | 217.77.160.49     | 33      | 101    | 68     | 2      | 3      | 5      | 3      |
-| 6     | -       | ?                                                             | ?                 | 100     | 101    | 0      | -      | -      | -      | -      |
-| 7     | -       | 20ge1-3.core1.prg1.he.net                                     | 91.210.16.201     | 0       | 101    | 101    | 4      | 5      | 17     | 6      |
-| 8     | 6939    | 100ge0-65.core3.fra1.he.net                                   | 184.105.213.233   | 78      | 101    | 23     | 11     | 37     | 290    | 35     |
-| 9     | 6939    | be47.core4.fra1.he.net                                        | 184.105.213.207   | 0       | 101    | 101    | 11     | 12     | 18     | 12     |
-| 10    | 6939    | be1.core3.par2.he.net                                         | 72.52.92.157      | 7       | 101    | 94     | 42     | 43     | 46     | 45     |
-| 11    | -       | ?                                                             | ?                 | 100     | 102    | 0      | -      | -      | -      | -      |
-| 12    | -       | ?                                                             | ?                 | 100     | 102    | 0      | -      | -      | -      | -      |
-| 13    | 6939    | port-channel6.core1.lis1.he.net                               | 184.104.193.150   | 30      | 102    | 72     | 43     | 43     | 47     | 43     |
-| 14    | 6939    | west-indian-ocean-cable-company-ltd.e0-27.core2.lis1.he.net   | 184.104.204.94    | 0       | 100    | 100    | 43     | 43     | 58     | 43     |
-| 15    | 37662   | 154.66.247.98                                                 | 154.66.247.98     | 0       | 100    | 100    | 170    | 171    | 183    | 171    |
-| 16    | 37662   | 154.66.247.107                                                | 154.66.247.107    | 0       | 100    | 100    | 156    | 157    | 178    | 158    |
-| 17    | 37662   | 154.66.247.67                                                 | 154.66.247.67     | 0       | 100    | 100    | 173    | 174    | 185    | 174    |
-| 18    | 37662   | 102.68.115.249                                                | 102.68.115.249    | 0       | 100    | 100    | 172    | 173    | 188    | 173    |
-| 19    | 37678   | 129.205.206.150                                               | 129.205.206.150   | 0       | 100    | 100    | 177    | 177    | 178    | 177    |
-| 20    | 37678   | 129.205.195.134                                               | 129.205.195.134   | 0       | 100    | 100    | 176    | 177    | 188    | 177    |
-| 21    | -       | ?                                                             | ?                 | 100     | 101    | 0      | -      | -      | -      | -      |
-| 22    | -       | ?                                                             | ?                 | 100     | 101    | 0      | -      | -      | -      | -      |
-| 23    | -       | ?                                                             | ?                 | 100     | 101    | 0      | -      | -      | -      | -      |
-| 24    | -       | ?                                                             | ?                 | 100     | 101    | 0      | -      | -      | -      | -      |
-| 25    | -       | ?                                                             | ?                 | 100     | 101    | 0      | -      | -      | -      | -      |
-| 26    | -       | ?                                                             | ?                 | 100     | 101    | 0      | -      | -      | -      | -      |
-| 27    | -       | ?                                                             | ?                 | 100     | 102    | 0      | -      | -      | -      | -      |
-| 28    | -       | ?                                                             | ?                 | 100     | 102    | 0      | -      | -      | -      | -      |
-| 29    | -       | ?                                                             | ?                 | 100     | 102    | 0      | -      | -      | -      | -      |
-| 30    | -       | ?                                                             | ?                 | 100     | 102    | 0      | -      | -      | -      | -      |
-+-------+---------+---------------------------------------------------------------+-------------------+---------+--------+--------+--------+--------+--------+--------+
++-----+-------+-------------------------------------------------------------+-----------------+--------+------+------+---------+---------+---------+---------+---------+
+| Hop | ASN   | Hostname                                                    | IP              | Loss % | Sent | Recv | Best ms | Avrg ms | Wrst ms | Last ms | Jttr ms |
++-----+-------+-------------------------------------------------------------+-----------------+--------+------+------+---------+---------+---------+---------+---------+
+| 1   | -     | RT-BE88U                                                    | 192.168.1.1     | 0      | 119  | 119  | 0       | 0       | 0       | 0       | 0       |
+| 2   | -     | 10.26.202.187                                               | 10.26.202.187   | 0      | 119  | 119  | 1       | 1       | 2       | 2       | 0       |
+| 3   | 16019 | 217.77.171.154                                              | 217.77.171.154  | 96     | 25   | 1    | 1       | 1       | 1       | 1       | -       |
+| 4   | 16019 | 217.77.171.153                                              | 217.77.171.153  | 18     | 68   | 56   | 2       | 2       | 3       | 3       | 0       |
+| 5   | 16019 | 914.1-1-7.sitpe00.oskarmobil.cz                             | 217.77.160.49   | 26     | 59   | 44   | 2       | 3       | 4       | 3       | 0       |
+| 6   | -     | Request timed out.                                                            | 100    | 24   | 0    | -       | -       | -       | -       | -       |
+| 7   | -     | 20ge1-3.core1.prg1.he.net                                   | 91.210.16.201   | 0      | 119  | 119  | 4       | 5       | 51      | 5       | 2       |
+| 8   | 6939  | 100ge0-0-0-7.core4.lon2.he.net                              | 184.105.213.13  | 17     | 72   | 60   | 22      | 23      | 25      | 23      | 0       |
+| 9   | 6939  | be4.core2.lon3.he.net                                       | 184.104.192.53  | 0      | 119  | 119  | 46      | 47      | 50      | 49      | 0       |
+| 10  | -     | Request timed out.                                                            | 100    | 24   | 0    | -       | -       | -       | -       | -       |
+| 11  | 6939  | port-channel6.core1.lis1.he.net                             | 184.104.193.150 | 37     | 49   | 31   | 45      | 46      | 51      | 46      | 0       |
+| 12  | 6939  | west-indian-ocean-cable-company-ltd.e0-27.core2.lis1.he.net | 184.104.204.94  | 0      | 119  | 119  | 45      | 45      | 72      | 46      | 1       |
+| 13  | 37662 | 154.66.247.98                                               | 154.66.247.98   | 1      | 115  | 114  | 181     | 185     | 236     | 183     | 4       |
+| 14  | 37662 | 154.66.247.93                                               | 154.66.247.93   | 0      | 119  | 119  | 184     | 185     | 202     | 185     | 0       |
+| 15  | 37662 | 154.66.247.215                                              | 154.66.247.215  | 0      | 119  | 119  | 182     | 183     | 198     | 196     | 0       |
+| 16  | 37662 | 154.66.247.236                                              | 154.66.247.236  | 0      | 119  | 119  | 181     | 184     | 237     | 185     | 4       |
+| 17  | 37662 | 154.66.247.123                                              | 154.66.247.123  | 0      | 119  | 119  | 182     | 183     | 213     | 183     | 1       |
+| 18  | 37662 | 102.68.115.249                                              | 102.68.115.249  | 0      | 119  | 119  | 184     | 184     | 186     | 185     | 0       |
+| 19  | 37678 | 129.205.206.150                                             | 129.205.206.150 | 0      | 119  | 119  | 186     | 186     | 188     | 187     | 0       |
+| 20  | 37678 | 129.205.195.134                                             | 129.205.195.134 | 0      | 119  | 119  | 188     | 189     | 192     | 190     | 0       |
+| 21  | -     | Request timed out.                                                            | 100    | 24   | 0    | -       | -       | -       | -       | -       |
+| 22  | -     | Request timed out.                                                            | 100    | 24   | 0    | -       | -       | -       | -       | -       |
+| 23  | -     | Request timed out.                                                            | 100    | 24   | 0    | -       | -       | -       | -       | -       |
+| 24  | -     | Request timed out.                                                            | 100    | 6    | 0    | -       | -       | -       | -       | -       |
+| 25  | -     | Request timed out.                                                            | 100    | 6    | 0    | -       | -       | -       | -       | -       |
+| 26  | -     | Request timed out.                                                            | 100    | 6    | 0    | -       | -       | -       | -       | -       |
+| 27  | -     | Request timed out.                                                            | 100    | 6    | 0    | -       | -       | -       | -       | -       |
+| 28  | -     | Request timed out.                                                            | 100    | 6    | 0    | -       | -       | -       | -       | -       |
+| 29  | -     | Request timed out.                                                            | 100    | 6    | 0    | -       | -       | -       | -       | -       |
+| 30  | -     | Request timed out.                                                            | 100    | 6    | 0    | -       | -       | -       | -       | -       |
++-----+-------+-------------------------------------------------------------+-----------------+--------+------+------+---------+---------+---------+---------+---------+
+
 ```
 
 ## Features
 
 - **Real-time route tracing** — continuously probes every hop between you and the target, updating statistics live
-- **Per-hop statistics** — ASN, hostname, IP address, packet loss, sent/received counts, best/avg/worst/last latency
+- **Per-hop statistics** — ASN, hostname, IP address, packet loss, jitter, sent/received counts, best/avg/worst/last latency
+- **Packet loss at a glance** — a per-hop visual bar shows loss severity, with a tooltip giving the exact numbers on hover; hops with 0% loss are dimmed so problem hops stand out
+- **Route change / load-balancing detection** — hovering a hop that returned replies from more than one IP flags it as a route change or per-packet load balancing, with details in the tooltip
+- **Hover tooltips everywhere in the table** — packet loss detail, and the full IP/hostname when it doesn't fit in its cell; tooltips track the cursor and stay fully on-screen
+- **Live test duration** — a running timer in the title bar while a trace is active, frozen at its final value once stopped; start time and duration are also included in exported reports
 - **ASN lookup** — Autonomous System Numbers resolved automatically via Team Cymru's DNS service
 - **IPv4 & IPv6** — full dual-stack support with auto-fallback if the target can't be resolved with the chosen protocol
 - **Configurable ping size** — adjust ICMP payload from 64 to 8192 bytes
-- **Light & dark themes** — switches instantly; Windows 11 title bar follows your choice via the native DWM API; auto-detects system theme on launch
-- **Export & copy** — save results as `.txt` or `.csv`, or copy the full report to clipboard; double-click any cell to copy its value; exported text adapts column widths to actual content
+- **Light & dark themes** — switches instantly; Windows 11 title bar follows your choice via the native DWM API; auto-detects system theme on launch; separate light/dark app icons
+- **Export & copy** — save results as `.txt`, `.csv`, or `.json` via a native Save dialog, or copy the full report to clipboard; double-click any cell to copy its value; exported text adapts column widths to actual content
+- **Keyboard shortcuts** — `Enter` in the target or ping size field starts/stops tracing; `Ctrl+C` copies the full report to clipboard (or just the selected text when a text field is focused); `Ctrl+S` opens the export dialog
 - **Smart column sizing** — Hostname and IP columns dynamically share available space based on content width
+- **Fluent Design UI** — interface fine-tuned to match the WinUI 3 / Fluent Design look and feel (Mica backdrop, spacing, borders, controls, focus states)
 - **No admin rights required** — runs as a standard user
 - **Instant close** — the app exits immediately at any time; background threads are stopped asynchronously without blocking the UI
 - **HiDPI aware** — Per-Monitor V2 DPI aware for crisp rendering on high-DPI and mixed-DPI setups
@@ -62,24 +70,16 @@ Date    : 2026-03-20 00:28:43
 
 ## Requirements
 
-- Windows 10 22H2+ (Windows 11 recommended for full Mica/DWM effects)
+- Windows 11
 - AMD64 or ARM64 processor
 
 ---
 
 ## Building
 
-The project uses CMake and statically linked Qt 6.11.1 (no Qt installation required for releases).
+Releases are built automatically via GitHub Actions on every push to `main` — AMD64 and ARM64 binaries are produced in parallel and uploaded as artifacts. No local Qt installation is needed.
 
-1. Install [Qt 6.11.1+](https://www.qt.io/download) with the `msvc2022_64` kit and the `Qt SVG` module
-2. Install Visual Studio 2022 with C++20 support
-3. Configure and build:
-   ```
-   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=<Qt install path>
-   cmake --build build
-   ```
-
-Releases are built automatically via GitHub Actions on every push — AMD64 and ARM64 binaries are produced in parallel.
+For a local build you need Visual Studio 2022 (C++20), CMake 3.22+, Ninja, and a static Qt 6 build. The workflow in `.github/workflows/build.yml` documents the exact steps used in CI.
 
 ---
 
