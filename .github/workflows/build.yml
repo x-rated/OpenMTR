@@ -1,0 +1,191 @@
+# ==========================================================================
+#  GitHub Actions — build OpenMTR for Windows
+#
+#  Builds static AMD64 + ARM64 binaries in parallel and uploads them as
+#  artifacts. Triggered on pushes to main, pull requests, or manually.
+# ==========================================================================
+
+name: Build
+
+# When the workflow runs.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - 'LICENSE'
+  pull_request:
+    branches: [ main ]
+
+# Cancel an in-progress run when a newer commit is pushed.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege token: read-only access to the repo.
+permissions:
+  contents: read
+
+# Shared configuration (Qt version + cache-busting suffix).
+env:
+  QT_VERSION: 6.11.1
+  # Bumped to v2 to force a Qt rebuild: the configure line now drops the
+  # mimetype feature, and both jobs pin one MSVC toolset (below).
+  QT_CACHE_SUFFIX: v1
+  # Pin ONE MSVC toolset across both runner images so the AMD64 and ARM64
+  # builds link with identical mitigations and codegen (they otherwise resolve
+  # different toolsets, e.g. 14.51 vs 14.44). If a job errors that this toolset
+  # is unavailable on its runner image, set this to a version present on both
+  # windows-latest and windows-11-arm.
+  MSVC_TOOLSET: '14.44'
+
+# Build matrix: one job per target architecture.
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: windows-latest
+            prefix: C:\Qt-static
+            artifact: OpenMTR-AMD64.exe
+          - arch: arm64
+            runner: windows-11-arm
+            prefix: C:\Qt-static
+            artifact: OpenMTR-ARM64.exe
+
+    runs-on: ${{ matrix.runner }}
+    name: Build (${{ matrix.arch }})
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Restore Qt cache
+        id: qt-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ matrix.prefix }}
+          key: qt-static-${{ env.QT_VERSION }}-${{ matrix.arch }}-${{ env.QT_CACHE_SUFFIX }}
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'amd64' }}
+          toolset: ${{ env.MSVC_TOOLSET }}
+
+      - name: Ensure Ninja
+        shell: pwsh
+        run: if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y }
+
+      - name: Fetch & patch Qt source
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $base = "https://download.qt.io/official_releases/qt/6.11/${{ env.QT_VERSION }}/submodules"
+          Invoke-WebRequest "$base/qtbase-everywhere-src-${{ env.QT_VERSION }}.zip" -OutFile qtbase.zip -TimeoutSec 600
+          Expand-Archive qtbase.zip -DestinationPath C:\Qt-src
+
+          $file = "C:\Qt-src\qtbase-everywhere-src-${{ env.QT_VERSION }}\src\gui\text\windows\qwindowsfontdatabase_ft.cpp"
+          $content = [System.IO.File]::ReadAllText($file)
+          $patched = $content.Replace('#include <QtCore/QSettings>', '// #include <QtCore/QSettings> -- removed: QSettings disabled')
+          if ($patched -eq $content) { Write-Error "Patch target not found in $file"; exit 1 }
+          [System.IO.File]::WriteAllText($file, $patched, [System.Text.UTF8Encoding]::new($false))
+
+      - name: Configure, build & install Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          C:\Qt-src\qtbase-everywhere-src-${{ env.QT_VERSION }}\configure.bat ^
+            -prefix ${{ matrix.prefix }} ^
+            -release -static -static-runtime ^
+            -platform win32-msvc ^
+            -no-opengl ^
+            -c++std c++20 ^
+            -nomake examples -nomake tests ^
+            -no-feature-sql -no-feature-printsupport -no-feature-concurrent ^
+            -no-feature-systemtrayicon -no-feature-whatsthis -no-feature-wizard ^
+            -no-feature-colordialog -no-feature-fontdialog ^
+            -no-feature-mdiarea -no-feature-dockwidget ^
+            -no-feature-jpeg -no-feature-gif ^
+            -no-feature-imageformat_ppm ^
+            -no-feature-imageformat_xbm -no-feature-imageformat_xpm ^
+            -no-feature-image_heuristic_mask -no-feature-image_text ^
+            -no-feature-movie ^
+            -no-feature-picture ^
+            -no-feature-draganddrop ^
+            -no-feature-pdf ^
+            -no-feature-tabletevent ^
+            -no-feature-sessionmanager ^
+            -no-feature-texthtmlparser ^
+            -no-feature-textmarkdownreader -no-feature-textmarkdownwriter ^
+            -no-feature-textodfwriter ^
+            -no-feature-emojisegmenter ^
+            -no-feature-gestures ^
+            -no-feature-translation ^
+            -no-feature-undocommand -no-feature-undostack -no-feature-undogroup ^
+            -no-feature-statustip ^
+            -no-feature-tabbar -no-feature-tabwidget ^
+            -no-feature-combobox -no-feature-fontcombobox ^
+            -no-feature-listview -no-feature-listwidget ^
+            -no-feature-treeview -no-feature-treewidget ^
+            -no-feature-splitter ^
+            -no-feature-filedialog -no-feature-filesystemmodel ^
+            -no-feature-mimetype ^
+            -no-feature-toolbox ^
+            -no-feature-calendarwidget -no-feature-datetimeedit ^
+            -no-feature-dial -no-feature-lcdnumber ^
+            -no-feature-rubberband -no-feature-sizegrip ^
+            -no-feature-textedit -no-feature-textbrowser ^
+            -no-feature-progressbar -no-feature-progressdialog ^
+            -no-feature-inputdialog -no-feature-messagebox -no-feature-errormessage ^
+            -no-feature-undoview ^
+            -no-feature-accessibility ^
+            -no-feature-style-windowsvista ^
+            -no-feature-style-windows11 ^
+            -no-feature-graphicsview -no-feature-graphicseffect ^
+            -confirm-license -opensource ^
+            -- -B C:\Qt-build && ^
+          cmake --build C:\Qt-build --parallel && ^
+          cmake --install C:\Qt-build
+
+      - name: Generate Qt forwarding headers
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          foreach ($module in @('QtWidgets', 'QtGui', 'QtCore')) {
+            $dir = "C:\Qt-static\include\$module"
+            if (-not (Test-Path $dir)) { continue }
+            foreach ($h in Get-ChildItem $dir -Filter "q*.h") {
+              $content = Get-Content $h.FullName -Raw
+              $regexMatches = [regex]::Matches($content,
+                '(?m)^ *(?:template\s*<[^>]*>\s*)?(?:class|struct)\s+(?:Q_\w+_EXPORT\s+)(Q[A-Za-z0-9_]+)')
+              foreach ($m in $regexMatches) {
+                $className = $m.Groups[1].Value
+                if ($className -match 'Private$') { continue }
+                $fwd = Join-Path $dir $className
+                if (-not (Test-Path $fwd)) {
+                  Set-Content -Path $fwd -Value "#include `"$($h.Name)`"" -Encoding UTF8 -NoNewline
+                }
+              }
+            }
+          }
+
+      - name: Build app
+        shell: cmd
+        run: |
+          cmake -S . -B build -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_PREFIX_PATH=${{ matrix.prefix }} ^
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded && ^
+          cmake --build build --parallel && ^
+          move /Y build\OpenMTR.exe build\${{ matrix.artifact }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: build\${{ matrix.artifact }}
