@@ -131,9 +131,7 @@ MainWindow::MainWindow(QWidget* parent)
     setupUi();
     connect(qApp, &QApplication::focusChanged, this, [this](QWidget*, QWidget* now) {
         bool isInteractive = now && (now->inherits("QPushButton") || now->inherits("QCheckBox")
-                                  || now->inherits("QLineEdit")   || now->inherits("QAbstractSpinBox")
-                                  || now->objectName() == "inputWrap"
-                                  || (now->parent() && now->parent()->objectName() == "inputWrap"));
+                                  || now->inherits("QLineEdit")   || now->inherits("QAbstractSpinBox"));
         if (!isInteractive) {
             m_keyboardFocus = false;
             hideFocusRing();
@@ -143,8 +141,8 @@ MainWindow::MainWindow(QWidget* parent)
                 w->setProperty("focused", false);
                 w->style()->polish(w);
             }
-            for (auto* f : findChildren<QFrame*>("inputWrap"))
-                applyInputWrapIdleStyle(f);
+            for (auto* f : m_inputs)
+                applyInputIdleStyle(f);
         }
     });
     if (m_darkMode) applyDarkTheme();
@@ -232,43 +230,37 @@ void MainWindow::setupUi()
     targetLabel->setObjectName("toolLabel");
     tbLayout->addWidget(targetLabel);
 
-    auto* targetWrap = new QFrame(this);
-    targetWrap->setObjectName("inputWrap");
-    targetWrap->setFrameShape(QFrame::NoFrame);
-    targetWrap->setAttribute(Qt::WA_Hover);
-    targetWrap->setCursor(Qt::IBeamCursor);
-    targetWrap->setFixedWidth(395); targetWrap->setFixedHeight(32);
-    m_targetEdit = new QLineEdit(targetWrap);
+    m_targetEdit = new QLineEdit(this);
     m_targetEdit->setObjectName("targetEdit");
     m_targetEdit->setPlaceholderText("Hostname or IP");
     m_targetEdit->setFrame(false);
-    m_targetEdit->setStyleSheet("border: none; border-radius: 0; background: transparent; padding: 0px 6px 0px 9px;");
+    m_targetEdit->setAttribute(Qt::WA_Hover);
+    m_targetEdit->setCursor(Qt::IBeamCursor);
+    m_targetEdit->setFixedWidth(395); m_targetEdit->setFixedHeight(32);
     m_targetEdit->setContextMenuPolicy(Qt::NoContextMenu);
-    m_targetEdit->setGeometry(0, 0, 295, 32);   // right edge trimmed at runtime for the clear button
     connect(m_targetEdit, &QLineEdit::returnPressed, this, &MainWindow::onStartStop);
-    targetWrap->installEventFilter(this);
 
     // Clear button (Fluent "clear" glyph), shown only while the field has
     // focus and non-empty text; its background appears on hover only. Sits at
     // the right edge of the input, before the accent overlay.
-    auto* clearBtn = new QPushButton(QString(QChar(0xE711)), targetWrap);
+    auto* clearBtn = new QPushButton(QString(QChar(0xE711)), m_targetEdit);
     clearBtn->setObjectName("inputClear");
     clearBtn->setCursor(Qt::ArrowCursor);
     clearBtn->setFocusPolicy(Qt::NoFocus);
     clearBtn->setFixedSize(28, 24);
     clearBtn->hide();
-    auto updateClear = [this, clearBtn, targetWrap]() {
+    auto updateClear = [this, clearBtn]() {
         const bool show = m_targetEdit->hasFocus() && !m_targetEdit->text().isEmpty();
-        const int full = targetWrap->width();
         if (show) {
-            const int btnX = full - 28 - 4;
-            clearBtn->move(btnX, (targetWrap->height() - 24) / 2);
+            const int btnX = m_targetEdit->width() - 28 - 4;
+            clearBtn->move(btnX, (m_targetEdit->height() - 24) / 2);
             clearBtn->raise();
-            // Text ends just before the button (6px gap), so long values sit
-            // close to the × rather than leaving a large empty strip.
-            m_targetEdit->setGeometry(0, 0, btnX + 1, 32);
+            // Reserve room on the right so typed text and the cursor never
+            // scroll under the button; combined with the 6px QSS padding this
+            // gives the same 6px gap in front of the × as before.
+            m_targetEdit->setTextMargins(0, 0, 32, 0);
         } else {
-            m_targetEdit->setGeometry(0, 0, full, 32);
+            m_targetEdit->setTextMargins(0, 0, 0, 0);
         }
         clearBtn->setVisible(show);
     };
@@ -278,42 +270,37 @@ void MainWindow::setupUi()
         m_targetEdit->setFocus(Qt::OtherFocusReason);
     });
     m_targetClearUpdate = updateClear;
-    auto* targetAccent = new InputAccentBar(targetWrap);
+    auto* targetAccent = new InputAccentBar(m_targetEdit);
     targetAccent->setObjectName("inputAccent");
     targetAccent->setAttribute(Qt::WA_TransparentForMouseEvents);
     targetAccent->hide();
-    tbLayout->addWidget(targetWrap);
+    tbLayout->addWidget(m_targetEdit);
     tbLayout->addSpacing(8);
 
     auto* pingSizeLabel = new QLabel("Ping size:", this);
     pingSizeLabel->setObjectName("toolLabel");
     tbLayout->addWidget(pingSizeLabel);
 
-    auto* pingSizeWrap = new QFrame(this);
-    pingSizeWrap->setObjectName("inputWrap");
-    pingSizeWrap->setFrameShape(QFrame::NoFrame);
-    pingSizeWrap->setAttribute(Qt::WA_Hover);
-    pingSizeWrap->setCursor(Qt::IBeamCursor);
-    pingSizeWrap->setFixedWidth(54); pingSizeWrap->setFixedHeight(32);
-    m_pingSizeBox = new QSpinBox(pingSizeWrap);
+    m_pingSizeBox = new QSpinBox(this);
     m_pingSizeBox->setObjectName("pingSizeBox");
     m_pingSizeBox->setRange(64, 8192); m_pingSizeBox->setValue(64);
     m_pingSizeBox->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_pingSizeBox->setFrame(false);
-    m_pingSizeBox->setStyleSheet("QSpinBox { border: none; border-radius: 0; background: transparent; padding: 0px 6px 0px 9px; } QSpinBox QLineEdit { border: none; background: transparent; padding: 0; }");
+    m_pingSizeBox->setAttribute(Qt::WA_Hover);
+    m_pingSizeBox->setCursor(Qt::IBeamCursor);
+    m_pingSizeBox->setFixedWidth(54); m_pingSizeBox->setFixedHeight(32);
     m_pingSizeBox->setContextMenuPolicy(Qt::NoContextMenu);
     m_pingSizeBox->installEventFilter(this);
     // The spin box's key events go to its internal QLineEdit, so filter that too
     // (needed to intercept Ctrl+C there — see eventFilter()).
     if (auto* sbEdit = m_pingSizeBox->findChild<QLineEdit*>())
         sbEdit->installEventFilter(this);
-    m_pingSizeBox->setGeometry(0, 0, 54, 32);
-    pingSizeWrap->installEventFilter(this);
-    auto* pingSizeAccent = new InputAccentBar(pingSizeWrap);
+    auto* pingSizeAccent = new InputAccentBar(m_pingSizeBox);
     pingSizeAccent->setObjectName("inputAccent");
     pingSizeAccent->setAttribute(Qt::WA_TransparentForMouseEvents);
     pingSizeAccent->hide();
-    tbLayout->addWidget(pingSizeWrap);
+    tbLayout->addWidget(m_pingSizeBox);
+    m_inputs = {m_targetEdit, m_pingSizeBox};
 
     m_targetEdit->installEventFilter(this);
     m_pingSizeBox->installEventFilter(this);
@@ -438,6 +425,8 @@ void MainWindow::setupUi()
     m_tableHeader = new PillHeaderView(Qt::Horizontal, m_table);
     m_table->setHorizontalHeader(m_tableHeader);
     m_tableHeader->setDark(m_darkMode);
+    if (QWidget* headerViewport = m_tableHeader->viewport())
+        headerViewport->installEventFilter(this);
     QStringList headers = COLUMNS;
     headers << QString() << QString();
     m_table->setHorizontalHeaderLabels(headers);
@@ -469,16 +458,16 @@ void MainWindow::setupUi()
     // right of (and including) Loss are all fixed-width, so the bar's x is
     // derived from the right edge; the bar group is centred inside the cell
     // exactly as the item delegate lays it out.
-    QTimer::singleShot(0, this, [this, targetWrap]() {
+    QTimer::singleShot(0, this, [this]() {
         const int lossCellX = width() - (140 + 7 * 70 + 7);
         const QFontMetrics fm(m_table->font());
         const int numCellW  = fm.horizontalAdvance(QStringLiteral("100"));
         const int groupW    = 80 + 8 + numCellW;            // track + gap + number
         const int barX      = lossCellX + (140 - groupW) / 2;
         const int btnX      = m_startStopBtn->mapTo(this, QPoint(0, 0)).x();
-        const int newWidth  = targetWrap->width() - (btnX - barX);
-        if (newWidth >= 200 && newWidth != targetWrap->width())
-            targetWrap->setFixedWidth(newWidth);
+        const int newWidth  = m_targetEdit->width() - (btnX - barX);
+        if (newWidth >= 200 && newWidth != m_targetEdit->width())
+            m_targetEdit->setFixedWidth(newWidth);
     });
 
     for (int c = 0; c < COLUMNS.size(); ++c) {
@@ -601,10 +590,8 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
         m_targetEdit->setPalette(p);
         m_pingSizeBox->setPalette(p);
     }
-    for (auto* w : findChildren<QFrame*>("inputWrap"))
-        applyInputWrapIdleStyle(w);
-    m_targetEdit->setStyleSheet("border: none; border-radius: 0; background: transparent; padding: 0px 6px 0px 9px;");
-    m_pingSizeBox->setStyleSheet("QSpinBox { border: none; border-radius: 0; background: transparent; padding: 0px 6px 0px 9px; } QSpinBox QLineEdit { border: none; background: transparent; padding: 0; }");
+    for (auto* w : m_inputs)
+        applyInputIdleStyle(w);
     m_table->viewport()->setStyleSheet("background-color: rgba(10,12,20,0.75);");
     if (m_tableHeader) m_tableHeader->setDark(true);
     if (m_tableScroll) m_tableScroll->setDark(true);
@@ -692,10 +679,8 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
         m_targetEdit->setPalette(p);
         m_pingSizeBox->setPalette(p);
     }
-    for (auto* w : findChildren<QFrame*>("inputWrap"))
-        applyInputWrapIdleStyle(w);
-    m_targetEdit->setStyleSheet("border: none; border-radius: 0; background: transparent; padding: 0px 6px 0px 9px;");
-    m_pingSizeBox->setStyleSheet("QSpinBox { border: none; border-radius: 0; background: transparent; padding: 0px 6px 0px 9px; } QSpinBox QLineEdit { border: none; background: transparent; padding: 0; }");
+    for (auto* w : m_inputs)
+        applyInputIdleStyle(w);
     m_table->viewport()->setStyleSheet("background-color: rgba(255,255,255,0.75);");
     if (m_tableHeader) m_tableHeader->setDark(false);
     if (m_tableScroll) m_tableScroll->setDark(false);
@@ -742,11 +727,11 @@ void MainWindow::applyWin11Chrome(bool dark)
 //  Input-field styling
 // ==========================================================================
 
-// Style one input 'wrap' frame for its state (idle / active / keyboard-
-// focused), including showing or hiding the accent underline.
-void MainWindow::updateInputWrapStyle(QFrame* wrap, InputAccentBar* accent, bool active, bool keyboardFocused)
+// Style one input control for its state (idle / active / keyboard-focused),
+// including showing or hiding the accent underline.
+void MainWindow::updateInputStyle(QWidget* input, InputAccentBar* accent, bool active, bool keyboardFocused)
 {
-    if (!wrap) return;
+    if (!input) return;
 
     // Opaque WinUI stroke colours: each translucent token composited onto the
     // field background actually behind it (idle strokes over the idle fill,
@@ -762,51 +747,64 @@ void MainWindow::updateInputWrapStyle(QFrame* wrap, InputAccentBar* accent, bool
     // itself keeps its active colour, unchanged from the mouse-active state.
     const QString sideColor   = active ? sideActive : sideIdle;
 
+    // QSpinBox renders its text through an internal child QLineEdit, which
+    // also needs the "no border / transparent" override — otherwise it would
+    // paint its own default frame on top of the outer control's border.
+    const bool isSpinBox = (qobject_cast<QSpinBox*>(input) != nullptr);
+    const QString sel = isSpinBox ? QStringLiteral("QSpinBox") : QStringLiteral("QLineEdit");
+    const QString innerEditRule = isSpinBox
+        ? (sel + QStringLiteral(" QLineEdit { border: none; background: transparent; padding: 0; }"))
+        : QString();
+
     if (active) {
-        wrap->setStyleSheet(QString(
-            "QFrame { border: 1px solid %1; border-radius: 4px; background-color: %2; }"
-        ).arg(sideColor, activeBg));
+        input->setStyleSheet(
+            sel + QStringLiteral(" { border: 1px solid ") + sideColor +
+            QStringLiteral("; border-radius: 4px; background-color: ") + activeBg +
+            QStringLiteral("; padding: 0px 6px 0px 9px; }") + innerEditRule);
 
         if (accent) {
             const int thickness = 2;
-            accent->setGeometry(0, wrap->height() - thickness, wrap->width(), thickness);
-            accent->setBar(wrap->width(), wrap->height(), thickness, 4.0, m_accent);
+            accent->setGeometry(0, input->height() - thickness, input->width(), thickness);
+            accent->setBar(input->width(), input->height(), thickness, 4.0, m_accent);
             accent->raise();
             accent->show();
         }
     } else {
-        wrap->setStyleSheet(QString(
-            "QFrame {"
-            "  border: 1px solid %1; border-bottom-color: %3;"
-            "  border-radius: 4px; background-color: %2;"
-            "}"
-            "QFrame:hover { background-color: %4; }"
-        ).arg(sideColor, idleBg, bottomIdle, hoverBg));
+        input->setStyleSheet(
+            sel + QStringLiteral(" { border: 1px solid ") + sideColor +
+            QStringLiteral("; border-bottom-color: ") + bottomIdle +
+            QStringLiteral("; border-radius: 4px; background-color: ") + idleBg +
+            QStringLiteral("; padding: 0px 6px 0px 9px; }") +
+            sel + QStringLiteral(":hover { background-color: ") + hoverBg + QStringLiteral("; }") +
+            innerEditRule);
 
         if (accent) accent->hide();
     }
 }
 
-// Reset an input wrap to its idle look, or a dimmed look when disabled.
-void MainWindow::applyInputWrapIdleStyle(QFrame* wrap)
+// Reset an input to its idle look, or a dimmed look when disabled.
+void MainWindow::applyInputIdleStyle(QWidget* input)
 {
-    if (!wrap) return;
-    auto* accent = wrap->findChild<InputAccentBar*>("inputAccent");
-    if (wrap->isEnabled()) {
-        updateInputWrapStyle(wrap, accent, false, false);
+    if (!input) return;
+    auto* accent = input->findChild<InputAccentBar*>("inputAccent");
+    if (input->isEnabled()) {
+        updateInputStyle(input, accent, false, false);
         return;
     }
-    // Opaque disabled border (composited onto the Mica base) so it stays crisp
-    // without an alpha channel; the fill keeps its translucency so Mica still
-    // shows through the field interior.
     // WinUI disabled TextBox: border = ControlStrokeColorDefault, fill =
     // ControlFillColorDisabled, both composited onto the Mica base to stay
     // opaque (crisp, no alpha-channel artefacts).
     const QString disabledBorder = m_darkMode ? "#303030" : "#e5e5e5";
     const QString disabledFill   = m_darkMode ? "#2a2a2a" : "#f5f5f5";
-    wrap->setStyleSheet(QString(
-        "QFrame { border: 1px solid %1; border-radius: 4px; background-color: %2; }"
-    ).arg(disabledBorder, disabledFill));
+    const bool isSpinBox = (qobject_cast<QSpinBox*>(input) != nullptr);
+    const QString sel = isSpinBox ? QStringLiteral("QSpinBox") : QStringLiteral("QLineEdit");
+    const QString innerEditRule = isSpinBox
+        ? (sel + QStringLiteral(" QLineEdit { border: none; background: transparent; padding: 0; }"))
+        : QString();
+    input->setStyleSheet(
+        sel + QStringLiteral(" { border: 1px solid ") + disabledBorder +
+        QStringLiteral("; border-radius: 4px; background-color: ") + disabledFill +
+        QStringLiteral("; padding: 0px 6px 0px 9px; }") + innerEditRule);
     if (accent) accent->hide();
 }
 
@@ -817,12 +815,8 @@ void MainWindow::setTracingInputsEnabled(bool enabled)
     m_ipv6Check->setEnabled(enabled);
     m_pingSizeBox->setEnabled(enabled);
 
-    for (auto* w : std::initializer_list<QWidget*>{m_targetEdit, m_pingSizeBox}) {
-        auto* wrap = qobject_cast<QFrame*>(w->parentWidget());
-        if (!wrap) continue;
-        wrap->setEnabled(enabled);
-        applyInputWrapIdleStyle(wrap);
-    }
+    for (auto* w : std::initializer_list<QWidget*>{m_targetEdit, m_pingSizeBox})
+        applyInputIdleStyle(w);
 }
 
 // ==========================================================================
@@ -1115,10 +1109,9 @@ bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr
 // ==========================================================================
 
 // Central event filter. In order: delayed tooltips for the theme/about icon
-// buttons; tracking whether focus arrived via keyboard; click-to-focus for
-// the input wraps; table-viewport hover and focus clearing; focus-ring and
-// input-underline styling on focus in/out; and Enter handling for inputs and
-// buttons.
+// buttons; tracking whether focus arrived via keyboard; table-viewport hover
+// and focus clearing; focus-ring and input-underline styling on focus in/out;
+// and Enter handling for inputs and buttons.
 // Tooltip text for one results-table cell: the item's own tooltip (loss
 // anomalies, multipath detail), preceded by the full text of an elided
 // Hostname/IP cell. Shared by the hover handler and the live refresh.
@@ -1219,17 +1212,6 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
         }
     }
 
-    if (event->type() == QEvent::MouseButtonPress) {
-        if (m_targetEdit && obj == m_targetEdit->parentWidget()) {
-            m_targetEdit->setFocus(Qt::MouseFocusReason);
-            return false;
-        }
-        if (m_pingSizeBox && obj == m_pingSizeBox->parentWidget()) {
-            m_pingSizeBox->setFocus(Qt::MouseFocusReason);
-            return false;
-        }
-    }
-
     if (m_table && obj == m_table->viewport()) {
         if (event->type() == QEvent::MouseMove) {
             auto* me = static_cast<QMouseEvent*>(event);
@@ -1258,12 +1240,32 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
                 w->setProperty("focused", false);
                 w->style()->polish(w);
             }
-            for (auto* f : findChildren<QFrame*>("inputWrap"))
-                applyInputWrapIdleStyle(f);
+            for (auto* f : m_inputs)
+                applyInputIdleStyle(f);
             QTimer::singleShot(0, this, [this]() {
                 if (m_toolbar) m_toolbar->setFocus(Qt::NoFocusReason);
             });
         }
+    }
+
+    // Clicking the (non-focusable) column header should drop keyboard focus
+    // the same way clicking the table body already does. Mouse events land on
+    // the header's own internal viewport, same as m_table's.
+    if (m_tableHeader && obj == m_tableHeader->viewport() && event->type() == QEvent::MouseButtonPress) {
+        m_keyboardFocus = false;
+        hideFocusRing();
+        if (auto* fw = QApplication::focusWidget()) fw->clearFocus();
+        for (auto* w : std::initializer_list<QWidget*>{
+                m_startStopBtn, m_copyBtn, m_exportBtn, m_themeBtn, m_ipv6Check,
+                m_targetEdit, m_pingSizeBox}) {
+            w->setProperty("focused", false);
+            w->style()->polish(w);
+        }
+        for (auto* f : m_inputs)
+            applyInputIdleStyle(f);
+        QTimer::singleShot(0, this, [this]() {
+            if (m_toolbar) m_toolbar->setFocus(Qt::NoFocusReason);
+        });
     }
 
     if (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut) {
@@ -1286,12 +1288,17 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
             } else if (isFocusRingTarget(w)) {
                 hideFocusRing();
             }
-            if (auto* frame = qobject_cast<QFrame*>(w->parent());
-                frame && frame->objectName() == "inputWrap") {
+            // Map the focused widget back to the input control that owns the
+            // border/accent-bar styling — a spin box's real editor can be an
+            // internal child QLineEdit rather than the QSpinBox itself.
+            QWidget* input = nullptr;
+            if (w == m_targetEdit || w == m_pingSizeBox) input = w;
+            else if (w->parentWidget() == m_pingSizeBox) input = m_pingSizeBox;
+            if (input) {
                 const bool silentFocus = (event->type() == QEvent::FocusIn) &&
                     (reason == Qt::NoFocusReason);
                 bool inputActive = (event->type() == QEvent::FocusIn) && !silentFocus;
-                updateInputWrapStyle(frame, frame->findChild<InputAccentBar*>("inputAccent"), inputActive, focused);
+                updateInputStyle(input, input->findChild<InputAccentBar*>("inputAccent"), inputActive, focused);
             }
         }
     }
@@ -1355,9 +1362,7 @@ void MainWindow::mousePressEvent(QMouseEvent* event)
 {
     QWidget* clicked = childAt(event->pos());
     bool isInteractive = clicked && (clicked->inherits("QPushButton") || clicked->inherits("QCheckBox")
-                                  || clicked->inherits("QLineEdit")   || clicked->inherits("QAbstractSpinBox")
-                                  || clicked->objectName() == "inputWrap"
-                                  || (clicked->parent() && clicked->parent()->objectName() == "inputWrap"));
+                                  || clicked->inherits("QLineEdit")   || clicked->inherits("QAbstractSpinBox"));
     if (!isInteractive) {
         m_keyboardFocus = false;
         hideFocusRing();
@@ -1368,8 +1373,8 @@ void MainWindow::mousePressEvent(QMouseEvent* event)
             w->setProperty("focused", false);
             w->style()->polish(w);
         }
-        for (auto* f : findChildren<QFrame*>("inputWrap"))
-            applyInputWrapIdleStyle(f);
+        for (auto* f : m_inputs)
+            applyInputIdleStyle(f);
         QTimer::singleShot(0, this, [this]() {
             if (m_toolbar) m_toolbar->setFocus(Qt::NoFocusReason);
         });

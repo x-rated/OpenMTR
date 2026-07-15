@@ -1559,8 +1559,8 @@ private:
     bool    isFocusRingTarget(QWidget* w) const;
     void    applyWin11Chrome(bool dark);
     void    applyFramelessStyle();
-    void    updateInputWrapStyle(QFrame* wrap, InputAccentBar* accent, bool active, bool keyboardFocused);
-    void    applyInputWrapIdleStyle(QFrame* wrap);
+    void    updateInputStyle(QWidget* input, InputAccentBar* accent, bool active, bool keyboardFocused);
+    void    applyInputIdleStyle(QWidget* input);
     void    setTracingInputsEnabled(bool enabled);
     void    updateTable();
     qint64  currentTestDurationMs() const;
@@ -1576,6 +1576,7 @@ private:
     QLineEdit*      m_targetEdit   = nullptr;
     std::function<void()> m_targetClearUpdate;
     QSpinBox*       m_pingSizeBox  = nullptr;
+    QList<QWidget*> m_inputs;   // the target/ping-size inputs, for idle-style resets
     PaintedCheckBox* m_ipv6Check   = nullptr;
     QPushButton*    m_startStopBtn = nullptr;
     QPushButton*    m_copyBtn      = nullptr;
