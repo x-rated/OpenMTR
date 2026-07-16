@@ -3,6 +3,11 @@
 # ============================================================================
 
 cmake_minimum_required(VERSION 3.22)
+
+if(APPLE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum OS X version" FORCE)
+endif()
+
 project(OpenMTR VERSION 1.2.0 LANGUAGES CXX)
 
 # ---- Language & Qt code generation -----------------------------------------
@@ -51,17 +56,24 @@ qt_import_plugins(OpenMTR
 # ---- Link libraries (Qt + the Win32 APIs the app uses) ---------------------
 target_link_libraries(OpenMTR PRIVATE
     Qt6::Widgets
-    ws2_32       # Winsock (address parsing, byte order)
-    Iphlpapi     # IcmpSendEcho2 / Icmp6SendEcho2
-    dwmapi       # Mica backdrop, dark titlebar, rounded corners
-    dnsapi       # DnsQuery_W (ASN TXT lookups)
-    comdlg32     # GetSaveFileNameW (export dialog)
 )
+
+if(WIN32)
+    target_link_libraries(OpenMTR PRIVATE
+        ws2_32       # Winsock (address parsing, byte order)
+        Iphlpapi     # IcmpSendEcho2 / Icmp6SendEcho2
+        dwmapi       # Mica backdrop, dark titlebar, rounded corners
+        dnsapi       # DnsQuery_W (ASN TXT lookups)
+        comdlg32     # GetSaveFileNameW (export dialog)
+    )
+endif()
 
 # ---- Target properties & compiler options ----------------------------------
 # WIN32_EXECUTABLE: build a GUI app (no console window).
+# MACOSX_BUNDLE: build a macOS app bundle (.app).
 set_target_properties(OpenMTR PROPERTIES
     WIN32_EXECUTABLE TRUE
+    MACOSX_BUNDLE TRUE
 )
 
 if(MSVC)

@@ -1,5 +1,5 @@
 # ==========================================================================
-#  GitHub Actions — build OpenMTR for Windows
+#  GitHub Actions — build OpenMTR for Windows & macOS
 #
 #  Builds static AMD64 + ARM64 binaries in parallel and uploads them as
 #  artifacts. Triggered on pushes to main, pull requests, or manually.
@@ -189,3 +189,42 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: build\${{ matrix.artifact }}
+
+  build-macos:
+    runs-on: macos-latest
+    name: Build (macOS ARM64)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Qt and Ninja
+        run: brew install qt ninja
+
+      - name: Configure & Build
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+            -DCMAKE_PREFIX_PATH=$(brew --prefix qt)
+          cmake --build build --parallel
+
+      - name: Deploy macOS App Bundle
+        run: |
+          $(brew --prefix qt)/bin/macdeployqt build/OpenMTR.app -always-overwrite -no-strip -libpath=$(brew --prefix)/lib
+
+      - name: Fix Codesign (Ad-hoc)
+        run: |
+          # Deep-sign the bundle to fix broken signatures from Homebrew dependencies
+          codesign --force --deep --sign - build/OpenMTR.app
+
+      - name: Package App Bundle into DMG
+        run: |
+          # Create a proper, compressed DMG file directly from the fixed .app bundle
+          hdiutil create -volname "OpenMTR" -srcfolder build/OpenMTR.app -ov -format UDZO build/OpenMTR.dmg
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenMTR-macOS
+          path: build/OpenMTR.dmg
