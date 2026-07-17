@@ -520,10 +520,10 @@ void MainWindow::setupUi()
     m_updateBadge->setObjectName("updateBadge");
     m_updateBadge->setAttribute(Qt::WA_StyledBackground, true);
     m_updateBadge->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-    m_updateBadge->setFixedSize(8, 8);
-    m_updateBadge->move(m_infoBtn->width() - 8 - 4, 4);
+    m_updateBadge->setFixedSize(4, 4);
+    m_updateBadge->move(m_infoBtn->width() - 4 - 4, 4);
     m_updateBadge->setStyleSheet(
-        QString("background-color: %1; border-radius: 4px;")
+        QString("background-color: %1; border-radius: 2px;")
             .arg(ovSystemAccentShade(m_darkMode).name()));
     m_updateBadge->hide();
 
@@ -810,7 +810,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
     if (m_focusRing) m_focusRing->setRingColor(QColor(255, 255, 255));
     if (m_titleBar)  m_titleBar->setDark(true);
     if (m_updateBadge) m_updateBadge->setStyleSheet(
-        QString("background-color: %1; border-radius: 4px;").arg(m_accent.name()));
+        QString("background-color: %1; border-radius: 2px;").arg(m_accent.name()));
     applyWin11Chrome(true);
     updateAppIcon();
 #ifdef Q_OS_MAC
@@ -928,7 +928,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
     if (m_focusRing) m_focusRing->setRingColor(QColor(0, 0, 0, 230));
     if (m_titleBar)  m_titleBar->setDark(false);
     if (m_updateBadge) m_updateBadge->setStyleSheet(
-        QString("background-color: %1; border-radius: 4px;").arg(m_accent.name()));
+        QString("background-color: %1; border-radius: 2px;").arg(m_accent.name()));
     applyWin11Chrome(false);
     updateAppIcon();
 #ifdef Q_OS_MAC
