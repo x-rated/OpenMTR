@@ -1,14 +1,15 @@
 # ============================================================================
-#  CMakeLists.txt — build definition for OpenMTR (static Qt 6 / Windows)
+#  CMakeLists.txt — build definition for OpenMTR (Windows static / macOS bundle)
 # ============================================================================
 
 cmake_minimum_required(VERSION 3.22)
 
+# Must be set before project(): the minimum macOS version the app targets.
 if(APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum OS X version" FORCE)
 endif()
 
-project(OpenMTR VERSION 1.2.0 LANGUAGES CXX)
+project(OpenMTR VERSION 1.1.0 LANGUAGES CXX)
 
 # ---- Language & Qt code generation -----------------------------------------
 set(CMAKE_CXX_STANDARD 20)
@@ -25,16 +26,19 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/version.h"
 )
 
 # ---- Windows resource script (icon + version info) -------------------------
-# Expand the @...@ placeholders in app.rc.in into app.rc.
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/app.rc.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/app.rc"
-    @ONLY
-)
+# Expand the @...@ placeholders in app.rc.in into app.rc. Windows-only: the
+# .rc format isn't meaningful to other platforms' compilers.
+if(WIN32)
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/app.rc.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/app.rc"
+        @ONLY
+    )
+endif()
 include_directories("${CMAKE_CURRENT_BINARY_DIR}")
 
 # ---- Dependencies ----------------------------------------------------------
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
 
 # ---- Executable ------------------------------------------------------------
 qt_add_executable(OpenMTR
@@ -44,18 +48,24 @@ qt_add_executable(OpenMTR
     tracer.cpp
     tracer.h
     resources.qrc
-    "${CMAKE_CURRENT_BINARY_DIR}/app.rc"
 )
 
-# Static Qt build: pull in the platform + ICO image plugins explicitly.
-qt_import_plugins(OpenMTR
-    INCLUDE Qt6::QWindowsIntegrationPlugin
-    INCLUDE Qt6::QICOPlugin
-)
+if(WIN32)
+    target_sources(OpenMTR PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/app.rc")
 
-# ---- Link libraries (Qt + the Win32 APIs the app uses) ---------------------
+    # Static Qt build: pull in the platform + ICO image plugins explicitly.
+    # (Not needed on macOS, which links Qt dynamically and bundles the Cocoa
+    # plugin via macdeployqt instead — see .github/workflows/build.yml.)
+    qt_import_plugins(OpenMTR
+        INCLUDE Qt6::QWindowsIntegrationPlugin
+        INCLUDE Qt6::QICOPlugin
+    )
+endif()
+
+# ---- Link libraries (Qt + the platform APIs the app uses) ------------------
 target_link_libraries(OpenMTR PRIVATE
     Qt6::Widgets
+    Qt6::Network
 )
 
 if(WIN32)
@@ -70,7 +80,7 @@ endif()
 
 # ---- Target properties & compiler options ----------------------------------
 # WIN32_EXECUTABLE: build a GUI app (no console window).
-# MACOSX_BUNDLE: build a macOS app bundle (.app).
+# MACOSX_BUNDLE: build a macOS app bundle (.app) instead of a bare binary.
 set_target_properties(OpenMTR PROPERTIES
     WIN32_EXECUTABLE TRUE
     MACOSX_BUNDLE TRUE
