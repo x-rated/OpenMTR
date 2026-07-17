@@ -1,8 +1,11 @@
 # ==========================================================================
-#  GitHub Actions — build OpenMTR for Windows & macOS
+#  GitHub Actions — build OpenMTR for Windows and macOS
 #
-#  Builds static AMD64 + ARM64 binaries in parallel and uploads them as
-#  artifacts. Triggered on pushes to main, pull requests, or manually.
+#  Builds static Windows AMD64 + ARM64 binaries and a macOS ARM64 app bundle
+#  in parallel, and uploads them as artifacts (each downloads as
+#  OpenMTR-Windows-<ARCH>.zip / OpenMTR-macOS.zip, containing a plain
+#  OpenMTR.exe / OpenMTR.dmg respectively). Triggered on pushes to main, pull
+#  requests, or manually.
 # ==========================================================================
 
 name: Build
@@ -31,8 +34,8 @@ permissions:
 # Shared configuration (Qt version + cache-busting suffix).
 env:
   QT_VERSION: 6.11.1
-  # Bumped to v2 to force a Qt rebuild: the configure line now drops the
-  # mimetype feature, and both jobs pin one MSVC toolset (below).
+  # Bumped to v2 to force a Qt rebuild: QtNetwork forwarding headers now
+  # need to be generated too (added for the update checker).
   QT_CACHE_SUFFIX: v1
   # Pin ONE MSVC toolset across both runner images so the AMD64 and ARM64
   # builds link with identical mitigations and codegen (they otherwise resolve
@@ -48,16 +51,18 @@ jobs:
       matrix:
         include:
           - arch: amd64
+            label: Windows AMD64
             runner: windows-latest
             prefix: C:\Qt-static
-            artifact: OpenMTR-AMD64.exe
+            artifact: OpenMTR-Windows-AMD64
           - arch: arm64
+            label: Windows ARM64
             runner: windows-11-arm
             prefix: C:\Qt-static
-            artifact: OpenMTR-ARM64.exe
+            artifact: OpenMTR-Windows-ARM64
 
     runs-on: ${{ matrix.runner }}
-    name: Build (${{ matrix.arch }})
+    name: Build (${{ matrix.label }})
 
     steps:
       - uses: actions/checkout@v4
@@ -156,7 +161,7 @@ jobs:
         if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          foreach ($module in @('QtWidgets', 'QtGui', 'QtCore')) {
+          foreach ($module in @('QtWidgets', 'QtGui', 'QtCore', 'QtNetwork')) {
             $dir = "C:\Qt-static\include\$module"
             if (-not (Test-Path $dir)) { continue }
             foreach ($h in Get-ChildItem $dir -Filter "q*.h") {
@@ -181,15 +186,20 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release ^
             -DCMAKE_PREFIX_PATH=${{ matrix.prefix }} ^
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded && ^
-          cmake --build build --parallel && ^
-          move /Y build\OpenMTR.exe build\${{ matrix.artifact }}
+          cmake --build build --parallel
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: build\${{ matrix.artifact }}
+          path: build\OpenMTR.exe
 
+  # macOS is built differently from Windows: a dynamically-linked Qt from
+  # Homebrew, bundled into the .app via macdeployqt, rather than a fully
+  # static Qt build. Trying to build Qt itself from source for macOS in CI
+  # (the way the Windows jobs do) would be far slower for comparatively
+  # little benefit, since macOS apps conventionally ship their dependencies
+  # bundled in the .app anyway rather than truly statically linked.
   build-macos:
     runs-on: macos-latest
     name: Build (macOS ARM64)
@@ -201,29 +211,29 @@ jobs:
       - name: Install Qt and Ninja
         run: brew install qt ninja
 
-      - name: Configure & Build
+      - name: Configure & build
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
             -DCMAKE_PREFIX_PATH=$(brew --prefix qt)
           cmake --build build --parallel
 
-      - name: Deploy macOS App Bundle
+      - name: Bundle Qt frameworks into the app
         run: |
           $(brew --prefix qt)/bin/macdeployqt build/OpenMTR.app -always-overwrite -no-strip -libpath=$(brew --prefix)/lib
 
-      - name: Fix Codesign (Ad-hoc)
+      - name: Fix codesign (ad-hoc)
         run: |
-          # Deep-sign the bundle to fix broken signatures from Homebrew dependencies
+          # Homebrew's own dependency dylibs carry signatures that don't
+          # survive being copied into the bundle; re-sign the whole thing
+          # so macOS Gatekeeper doesn't reject it outright.
           codesign --force --deep --sign - build/OpenMTR.app
 
-      - name: Package App Bundle into DMG
+      - name: Package into a DMG
         run: |
-          # Create a proper, compressed DMG file directly from the fixed .app bundle
           hdiutil create -volname "OpenMTR" -srcfolder build/OpenMTR.app -ov -format UDZO build/OpenMTR.dmg
 
-      - name: Upload macOS Artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: OpenMTR-macOS
