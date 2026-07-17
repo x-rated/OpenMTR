@@ -48,6 +48,7 @@
 // Qt — GUI.
 #include <QtGui/QFontMetrics>
 #include <QtGui/QPainter>
+#include <QtGui/QPixmap>
 #include <QtGui/QPen>
 #include <QtGui/QPainterPath>
 #include <QtGui/QPaintEvent>
@@ -1642,6 +1643,10 @@ private:
     QPushButton*    m_exportBtn    = nullptr;
     QPushButton*    m_themeBtn     = nullptr;
     QPushButton*    m_infoBtn      = nullptr;
+    QWidget*        m_updateBadge  = nullptr;
+    bool            m_updateAvailable = false;
+    QString         m_updateVersion;
+    QString         m_updateReleaseUrl;
     QTimer          m_iconTipTimer;
     QPushButton*    m_iconTipPending = nullptr;
     QString         m_iconTipText;
@@ -1711,7 +1716,8 @@ public:
                      const QString& linkUrl2 = QString(),
                      const QString& linkText2 = QString(),
                      const QString& accentUrl = QString(),
-                     const QString& accentText = QString())
+                     const QString& accentText = QString(),
+                     const QString& infoBarText = QString())
     {
         QPointer<QWidget> smoke;
         if (parent) {
@@ -1726,7 +1732,7 @@ public:
             smoke->show();
         }
 
-        MicaDialog dlg(parent, title, message, darkMode, linkUrl, linkText, linkUrl2, linkText2, accentUrl, accentText);
+        MicaDialog dlg(parent, title, message, darkMode, linkUrl, linkText, linkUrl2, linkText2, accentUrl, accentText, infoBarText);
         dlg.exec();
 
         if (smoke) { smoke->hide(); smoke->deleteLater(); }
@@ -1740,7 +1746,8 @@ private:
                         const QString& linkUrl2 = QString(),
                         const QString& linkText2 = QString(),
                         const QString& accentUrl = QString(),
-                        const QString& accentText = QString())
+                        const QString& accentText = QString(),
+                        const QString& infoBarText = QString())
         : QDialog(parent, Qt::Dialog | Qt::FramelessWindowHint), m_darkMode(darkMode)
     {
         setAttribute(Qt::WA_TranslucentBackground);
@@ -1847,6 +1854,76 @@ private:
             cardLayout->addLayout(linkRow);
         }
 
+        if (!infoBarText.isEmpty()) {
+            // A lightweight stand-in for a WinUI3 InfoBar (Informational
+            // severity, IsClosable="false" — no dismiss "×"). Per spec,
+            // Informational severity uses a neutral card-like surface
+            // rather than an accent tint — only the icon carries colour.
+            auto* infoBar = new QWidget(m_card);
+            infoBar->setObjectName("micaInfoBar");
+            infoBar->setAttribute(Qt::WA_StyledBackground, true);
+
+            const QColor accent = ovSystemAccentShade(darkMode);
+            // Colours sampled directly from the WinUI3 Gallery's own
+            // InfoBar (not estimated from token names): dark theme reads
+            // mainly through a fill that's distinctly *lighter* than the
+            // page, with a border barely different from it; light theme is
+            // the reverse — the fill is nearly the same as the page, and a
+            // visible mid-grey border does the work instead. Solid colours,
+            // not alpha — no antialiasing concerns either way.
+            const QString fill   = darkMode ? "#272727" : "#F4F4F4";
+            const QString border = darkMode ? "#1D1D1D" : "#E5E5E5";
+            infoBar->setStyleSheet(QString(
+                "QWidget#micaInfoBar { background-color: %1; border: 1px solid %2; border-radius: 6px; }")
+                .arg(fill, border));
+
+            auto* infoBarLayout = new QHBoxLayout(infoBar);
+
+            auto* infoText = new QLabel(infoBarText, infoBar);
+            infoText->setObjectName("micaInfoBarText");
+            infoText->setWordWrap(true);
+            QFont infoTextFont(QStringLiteral("Segoe UI"));
+            infoTextFont.setPixelSize(14);
+            infoText->setFont(infoTextFont);
+            infoText->setStyleSheet(darkMode
+                ? "color: #ffffff; background: transparent;"
+                : "color: rgba(0,0,0,0.89); background: transparent;");
+
+            const int iconSize = 15;
+            const int iconFontPx = 9;
+            auto* icon = new QLabel(infoBar);
+            icon->setObjectName("micaInfoBarIcon");
+            icon->setAttribute(Qt::WA_StyledBackground, true);
+            icon->setText("i");
+            icon->setAlignment(Qt::AlignCenter);
+            icon->setFixedSize(iconSize, iconSize);
+            QFont iconFont(QStringLiteral("Segoe UI"));
+            iconFont.setPixelSize(iconFontPx);
+            iconFont.setBold(true);
+            icon->setFont(iconFont);
+            icon->setStyleSheet(QString(
+                "background-color: %1; color: %4; border-radius: %2px;"
+                " font-family: 'Segoe UI'; font-size: %3px; font-weight: bold;")
+                .arg(accent.name())
+                .arg(iconSize / 2)
+                .arg(iconFontPx)
+                .arg(darkMode ? "#000000" : "#ffffff"));
+
+            const int topOffset = 3;
+            auto* iconCol = new QVBoxLayout();
+            iconCol->setContentsMargins(2, 0, 2, 0);
+            iconCol->setSpacing(0);
+            iconCol->addSpacing(topOffset);
+            iconCol->addWidget(icon);
+            iconCol->addStretch();
+
+            infoBarLayout->setContentsMargins(15, 15, 15, 15);
+            infoBarLayout->setSpacing(14);
+            infoBarLayout->addLayout(iconCol);
+            infoBarLayout->addWidget(infoText, 1);
+            cardLayout->addWidget(infoBar);
+        }
+
         m_closeBtn = new QPushButton("Close", this);
         auto* closeBtn = m_closeBtn;
         closeBtn->setObjectName("micaClose");
@@ -1872,12 +1949,6 @@ private:
               " QPushButton:pressed { background-color: rgba(235,235,235,1.0);"
               " border-color: #dfdfdf; color: rgba(0,0,0,0.60); }");
         QTimer::singleShot(0, this, [closeBtn]() { closeBtn->setFocus(); });
-        if (m_linkBtn && m_linkBtn2) {
-            QWidget::setTabOrder(m_linkBtn, m_linkBtn2);
-            QWidget::setTabOrder(m_linkBtn2, closeBtn);
-        } else if (m_linkBtn) {
-            QWidget::setTabOrder(m_linkBtn, closeBtn);
-        }
 
         auto* btnRow = new QHBoxLayout;
         btnRow->setContentsMargins(0, 0, 0, 0);
@@ -1898,15 +1969,14 @@ private:
             closeBtn->setDefault(false);
             accentBtn->setDefault(true);
             accentBtn->setAutoDefault(false);
-            QWidget::setTabOrder(closeBtn, accentBtn);
 
             connect(accentBtn, &QPushButton::clicked, this, [this, accentUrl]() {
                 QDesktopServices::openUrl(QUrl(accentUrl));
                 accept();
             });
 
-            // Same fill/hover/pressed treatment — and now the exact same
-            // opaque border-blend tokens (BRDSIDE/BRDBOT/BRDPRESS) — as the
+            // Same fill/hover/pressed treatment, and the same opaque
+            // border-blend tokens (BRDSIDE/BRDBOT/BRDPRESS), as the
             // toolbar's accent ("start") button.
             const QColor accent = ovSystemAccentShade(darkMode);
             const QString acc90 = ovAccentRgba(accent, 0.90);
@@ -1944,6 +2014,20 @@ private:
             btnRow->addWidget(closeBtn);
         }
 
+        // Tab order should follow the actual visual layout, top to bottom
+        // and left to right: link(s) first, then the footer buttons in the
+        // order they appear on screen (accent/primary before Close).
+        QWidget* prevTab = nullptr;
+        auto chainTab = [&prevTab](QWidget* w) {
+            if (!w) return;
+            if (prevTab) QWidget::setTabOrder(prevTab, w);
+            prevTab = w;
+        };
+        chainTab(m_linkBtn);
+        chainTab(m_linkBtn2);
+        chainTab(m_accentBtn);
+        chainTab(closeBtn);
+
         auto* sep = new SepWidget(
             darkMode ? QColor(255, 255, 255, 20) : QColor(255, 255, 255, 175),
             this);
@@ -1973,10 +2057,10 @@ private:
                 #micaTitle { color: #ffffff; font-family: "Segoe UI"; font-size: 20px; font-weight: 600; background: transparent; }
                 #micaBody  { color: rgba(255,255,255,0.78); font-family: "Segoe UI"; font-size: 14px; background: transparent; }
             )");
-            setStyleSheet(R"(
-                MicaDialog { background-color: #202020; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; }
-                QPushButton#micaClose { font-family: "Segoe UI"; font-size: 14px; outline: none; }
-            )");
+            setStyleSheet(QString(
+                "MicaDialog { background-color: #202020; border: 1px solid %1; border-radius: 8px; }"
+                "QPushButton#micaClose { font-family: \"Segoe UI\"; font-size: 14px; outline: none; }")
+                .arg(ovAccentBlend(QColor(0, 0, 0), QColor(0x20, 0x20, 0x20), 25.0 / 255.0)));
         } else {
             m_card->setStyleSheet(R"(
                 #micaCard {
@@ -1986,10 +2070,10 @@ private:
                 #micaTitle { color: #1a1a1a; font-family: "Segoe UI"; font-size: 20px; font-weight: 600; background: transparent; }
                 #micaBody  { color: rgba(0,0,0,0.78); font-family: "Segoe UI"; font-size: 14px; background: transparent; }
             )");
-            setStyleSheet(R"(
-                MicaDialog { background-color: #FFFFFF; border: 1px solid rgba(0,0,0,0.08); border-radius: 8px; }
-                QPushButton#micaClose { font-family: "Segoe UI"; font-size: 14px; outline: none; }
-            )");
+            setStyleSheet(QString(
+                "MicaDialog { background-color: #FFFFFF; border: 1px solid %1; border-radius: 8px; }"
+                "QPushButton#micaClose { font-family: \"Segoe UI\"; font-size: 14px; outline: none; }")
+                .arg(ovAccentBlend(QColor(0, 0, 0), QColor(255, 255, 255), 15.0 / 255.0)));
         }
 
         m_focusRing = new FocusRing(this);

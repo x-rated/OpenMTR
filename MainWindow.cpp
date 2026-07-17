@@ -310,6 +310,13 @@ void MainWindow::checkForUpdates()
 
         const QString releaseUrl = obj.value("html_url").toString();
 
+        m_updateAvailable = true;
+        m_updateVersion = tag;
+        m_updateReleaseUrl = releaseUrl.isEmpty()
+            ? QStringLiteral("https://github.com/x-rated/OpenMTR/releases/latest")
+            : releaseUrl;
+        if (m_updateBadge) m_updateBadge->show();
+
         MicaDialog::show(this,
             "Update available",
             QString("OpenMTR %1 is available — you're running %2.\n\n"
@@ -317,8 +324,7 @@ void MainWindow::checkForUpdates()
                 .arg(tag, OPENMTR_VERSION),
             m_darkMode,
             QString(), QString(), QString(), QString(),
-            releaseUrl.isEmpty() ? QStringLiteral("https://github.com/x-rated/OpenMTR/releases/latest")
-                                  : releaseUrl,
+            m_updateReleaseUrl,
             "Download");
     });
 }
@@ -505,19 +511,45 @@ void MainWindow::setupUi()
 #else
     m_infoBtn->setText(QString(QChar(0x24D8)));    // Circled small i ⓘ
 #endif
+
+    // WinUI3 "attention dot" InfoBadge: a small, borderless, accent-coloured
+    // dot anchored to the button's top-right corner. Hidden until an update
+    // is found; cleared once the user opens this dialog (they've now seen
+    // the same information here), even if they dismissed the earlier popup.
+    m_updateBadge = new QWidget(m_infoBtn);
+    m_updateBadge->setObjectName("updateBadge");
+    m_updateBadge->setAttribute(Qt::WA_StyledBackground, true);
+    m_updateBadge->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    m_updateBadge->setFixedSize(8, 8);
+    m_updateBadge->move(m_infoBtn->width() - 8 - 4, 4);
+    m_updateBadge->setStyleSheet(
+        QString("background-color: %1; border-radius: 4px;")
+            .arg(ovSystemAccentShade(m_darkMode).name()));
+    m_updateBadge->hide();
+
     connect(m_infoBtn, &QPushButton::clicked, this, [this]() {
+        m_updateBadge->hide();
+
+        const QString msg = QString("Version %1 (%2) · Qt %3\n\n"
+                "Continuously traces the route to a host and shows per-hop latency and packet loss statistics in real time.\n\n"
+                "© slamb.eu · GPL-2.0 license")
+            .arg(OPENMTR_VERSION)
+            .arg(QSysInfo::buildCpuArchitecture().toUpper()
+                     .replace("X86_64", "AMD64"))
+            .arg(QT_VERSION_STR);
+
         MicaDialog::show(this,
             "OpenMTR",
-            QString("Version %1 (%2) · Qt %3\n\n"
-                    "Continuously traces the route to a host and shows per-hop latency and packet loss statistics in real time.\n\n"
-                    "© slamb.eu · GPL-2.0 license")
-                .arg(OPENMTR_VERSION)
-                .arg(QSysInfo::buildCpuArchitecture().toUpper()
-                         .replace("X86_64", "AMD64"))
-                .arg(QT_VERSION_STR),
+            msg,
             m_darkMode,
             "https://github.com/x-rated/OpenMTR",
-            "GitHub");
+            "GitHub",
+            QString(), QString(),
+            m_updateAvailable ? m_updateReleaseUrl : QString(),
+            m_updateAvailable ? QStringLiteral("Update") : QString(),
+            m_updateAvailable ? QString("Version %1 is available — update to get the latest features and fixes.")
+                                     .arg(m_updateVersion)
+                               : QString());
     });
     tbLayout->addWidget(m_infoBtn);
     mainLayout->addWidget(m_toolbar);
@@ -777,6 +809,8 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
     if (m_ipv6Check)   m_ipv6Check->setDark(true);
     if (m_focusRing) m_focusRing->setRingColor(QColor(255, 255, 255));
     if (m_titleBar)  m_titleBar->setDark(true);
+    if (m_updateBadge) m_updateBadge->setStyleSheet(
+        QString("background-color: %1; border-radius: 4px;").arg(m_accent.name()));
     applyWin11Chrome(true);
     updateAppIcon();
 #ifdef Q_OS_MAC
@@ -893,6 +927,8 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
     if (m_ipv6Check)   m_ipv6Check->setDark(false);
     if (m_focusRing) m_focusRing->setRingColor(QColor(0, 0, 0, 230));
     if (m_titleBar)  m_titleBar->setDark(false);
+    if (m_updateBadge) m_updateBadge->setStyleSheet(
+        QString("background-color: %1; border-radius: 4px;").arg(m_accent.name()));
     applyWin11Chrome(false);
     updateAppIcon();
 #ifdef Q_OS_MAC
