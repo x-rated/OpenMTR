@@ -1,10 +1,11 @@
 # ==========================================================================
-#  GitHub Actions — build OpenMTR for Windows and macOS
+#  GitHub Actions — build OpenMTR for Windows, macOS and Linux
 #
-#  Builds static Windows AMD64 + ARM64 binaries and a macOS ARM64 app bundle
-#  in parallel, and uploads them as artifacts (each downloads as
-#  OpenMTR-Windows-<ARCH>.zip / OpenMTR-macOS.zip, containing a plain
-#  OpenMTR.exe / OpenMTR.dmg respectively). Triggered on pushes to main, pull
+#  Builds static Windows AMD64 + ARM64 binaries, a macOS ARM64 app bundle,
+#  and a Linux x86_64 AppImage in parallel, and uploads them as artifacts
+#  (each downloads as OpenMTR-Windows-<ARCH>.zip / OpenMTR-macOS.zip /
+#  OpenMTR-Linux-x86_64.zip, containing a plain OpenMTR.exe / OpenMTR.dmg /
+#  OpenMTR-x86_64.AppImage respectively). Triggered on pushes to main, pull
 #  requests, or manually.
 # ==========================================================================
 
@@ -46,7 +47,7 @@ env:
 
 # Build matrix: one job per target architecture.
 jobs:
-  build:
+  build-windows:
     strategy:
       matrix:
         include:
@@ -65,19 +66,23 @@ jobs:
     name: Build (${{ matrix.label }})
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
       - name: Restore Qt cache
         id: qt-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ matrix.prefix }}
           key: qt-static-${{ env.QT_VERSION }}-${{ matrix.arch }}-${{ env.QT_CACHE_SUFFIX }}
 
       - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1
+        # ilammy/msvc-dev-cmd hasn't been touched since Jan 2024 and still
+        # ships on Node 20. This is TheMrMilchmann's actively maintained
+        # fork — same `arch`/`toolset` inputs (so MSVC_TOOLSET pinning is
+        # unaffected), just on the node24 runtime.
+        uses: TheMrMilchmann/setup-msvc-dev@v4
         with:
           arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'amd64' }}
           toolset: ${{ env.MSVC_TOOLSET }}
@@ -189,7 +194,7 @@ jobs:
           cmake --build build --parallel
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}
           path: build\OpenMTR.exe
@@ -204,9 +209,12 @@ jobs:
     runs-on: macos-latest
     name: Build (macOS ARM64)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
+
+      - name: Remove untrusted Homebrew taps
+        run: brew untap aws/tap || true
 
       - name: Install Qt and Ninja
         run: brew install qt ninja
@@ -234,7 +242,93 @@ jobs:
           hdiutil create -volname "OpenMTR" -srcfolder build/OpenMTR.app -ov -format UDZO build/OpenMTR.dmg
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: OpenMTR-macOS
           path: build/OpenMTR.dmg
+
+  # Linux, like macOS, links Qt dynamically (from the distro's packages)
+  # rather than building a static Qt from source, and bundles the runtime
+  # dependencies at packaging time — here via linuxdeploy + its Qt plugin,
+  # which play the same role appimage-side that macdeployqt plays for the
+  # .app bundle above. Two architectures, like the Windows matrix — but
+  # unlike Windows (cross-compiled via the ARM64 MSVC toolset), each runs
+  # natively on GitHub's own AMD64/ARM64 Linux runners, so there's no
+  # cross-compilation to set up. Runs on ubuntu-26.04 for a modern enough
+  # apt-packaged Qt (6.10+) to use QStyleHints::colorSchemeChanged natively
+  # (see MainWindow's live light/dark theme handling) — at the cost of a
+  # newer minimum glibc (resolute's, vs. jammy's 2.35) than the AppImage
+  # would need on an older runner, i.e. less portability to older/LTS
+  # distros. Accepted trade-off: this build targets current desktop
+  # systems, not older server/LTS ones.
+  build-linux:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            label: Linux AMD64
+            runner: ubuntu-26.04
+            linuxdeploy_arch: x86_64
+            artifact: OpenMTR-Linux-AMD64
+          - arch: arm64
+            label: Linux ARM64
+            runner: ubuntu-26.04-arm
+            linuxdeploy_arch: aarch64
+            artifact: OpenMTR-Linux-ARM64
+
+    runs-on: ${{ matrix.runner }}
+    name: Build (${{ matrix.label }})
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install Qt, Ninja & FUSE
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qt6-base-dev libqt6svg6-dev ninja-build \
+            libgl1-mesa-dev libfuse2 \
+            libxcb-shape0-dev
+
+      - name: Configure & build
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr
+          cmake --build build --parallel
+
+      - name: Install into AppDir
+        run: cmake --install build --prefix AppDir/usr
+
+      - name: Fetch linuxdeploy & its Qt plugin
+        run: |
+          base="https://github.com/linuxdeploy"
+          wget -q "$base/linuxdeploy/releases/download/continuous/linuxdeploy-${{ matrix.linuxdeploy_arch }}.AppImage"
+          wget -q "$base/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-${{ matrix.linuxdeploy_arch }}.AppImage"
+          chmod +x linuxdeploy-*.AppImage
+
+      - name: Build AppImage
+        env:
+          # linuxdeploy needs to find qmake to locate the Qt install; the
+          # apt package doesn't put it on PATH under its versioned name.
+          QMAKE: /usr/lib/qt6/bin/qmake6
+          # Squashing the AppImage's own FUSE mount inside a container
+          # without --privileged is unreliable; extract-and-run avoids it.
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          ./linuxdeploy-${{ matrix.linuxdeploy_arch }}.AppImage \
+            --appdir AppDir \
+            --plugin qt \
+            --output appimage \
+            --desktop-file openmtr.desktop \
+            --icon-file app_icon.png
+
+      - name: Rename artifact
+        run: mv OpenMTR*.AppImage OpenMTR-${{ matrix.arch }}.AppImage
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.artifact }}
+          path: OpenMTR-${{ matrix.arch }}.AppImage
