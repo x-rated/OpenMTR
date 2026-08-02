@@ -1,9 +1,21 @@
 <!DOCTYPE RCC>
-<!-- Qt resource bundle: embeds the light/dark application icons into the
-     executable so they can be loaded as :/app_light.ico and :/app_dark.ico. -->
+<!-- Qt resource bundle: embeds the application icon into the executable so
+     it can be loaded as :/app_icon.png (see MainWindow::updateAppIcon()).
+     PNG rather than ICO: PNG decoding is always built into Qt, on every
+     platform, with no plugin dependency — app_icon.ico is still needed as
+     a real file on disk (Windows demands that format for the .exe's own
+     resource icon, see app.rc.in), but doesn't need to be embedded here
+     since nothing loads it through Qt at runtime any more. -->
 <RCC version="1.0">
     <qresource>
-        <file>app_light.ico</file>
-        <file>app_dark.ico</file>
+        <file>app_icon.png</file>
+        <!-- Same icon linuxdeploy packages as the AppImage's own top-level
+             icon (see CMakeLists.txt / .github/workflows/build.yml);
+             embedded here too so main.cpp can copy it out to
+             ~/.local/share/icons at runtime when self-integrating an
+             AppImage launch (see integrateAppImageDesktopEntry()). Given
+             the alias below so :/openmtr.png keeps matching the Icon= name
+             in openmtr.desktop regardless of the underlying filename. -->
+        <file alias="openmtr.png">app_icon.png</file>
     </qresource>
 </RCC>

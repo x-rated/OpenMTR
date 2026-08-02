@@ -8,7 +8,7 @@
 #include <windows.h>
 
 // Application icon (Explorer / taskbar).
-IDI_APPICON ICON "@CMAKE_CURRENT_SOURCE_DIR@/app_light.ico"
+IDI_APPICON ICON "@CMAKE_CURRENT_SOURCE_DIR@/app_icon.ico"
 
 // Version information block embedded in the .exe.
 VS_VERSION_INFO VERSIONINFO

@@ -44,6 +44,14 @@
 #include <netdb.h>
 #include <fcntl.h>
 #include <errno.h>
+#ifdef __linux__
+// Linux unprivileged "ping sockets" (SOCK_DGRAM/IPPROTO_ICMP[V6]) deliver
+// ICMP errors like Time Exceeded through the socket's error queue rather
+// than as ordinary readable data — see the comment above the DoTrace()
+// receive loop for why that matters. sock_extended_err/SO_EE_OFFENDER live
+// here; this header doesn't exist on macOS/BSD.
+#include <linux/errqueue.h>
+#endif
 
 // Windows API types used throughout this file, backed by their POSIX
 // equivalents so the ICMP engine below doesn't need a #ifdef at every use.
@@ -130,6 +138,8 @@ typedef struct
 // bar (captionLabelFromSystem(), GetSystemMenu()) which includes this header
 // before its own Windows includes.
 #define SC_MINIMIZE 0xF020
+#define SC_MAXIMIZE 0xF030
+#define SC_RESTORE  0xF120
 #define SC_CLOSE    0xF060
 #endif
 

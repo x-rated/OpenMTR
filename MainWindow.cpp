@@ -52,6 +52,88 @@ static void setMacOsDarkAppearance(WId winId, bool dark)
     reinterpret_cast<void (*)(id, SEL, id)>(objc_msgSend)(
         window, sel_registerName("setAppearance:"), appearance);
 }
+
+// A struct with NSRect's memory layout (origin.x/y, size.w/h as CGFloat).
+// Passing a struct like this as an argument to an objc_msgSend call is fine
+// on arm64 (the only macOS architecture this project targets) — it's only
+// *returning* a struct that would need the special objc_msgSend_stret
+// entry point on some other ABIs, and this file never reads a frame/bounds
+// value back, only ever hands one in (see the oversized-frame trick below).
+struct OvNSRect { double x, y, w, h; };
+
+// Install a translucent NSVisualEffectView behind the window's content, the
+// closest macOS equivalent to the Mica backdrop used on Windows 11 (see
+// applyWin11Chrome() / dwmapi.h usage elsewhere in this file). Safe to call
+// repeatedly (e.g. once per theme toggle): a tag on the view lets it detect
+// its own view already being installed and no-op instead of stacking a new
+// one each time.
+static void setMacOsVibrancy(WId winId)
+{
+    id contentView = (id)winId;
+    if (!contentView) return;
+
+    id window = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(
+        contentView, sel_registerName("window"));
+    if (!window) return;
+
+    id nsContentView = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(
+        window, sel_registerName("contentView"));
+    if (!nsContentView) return;
+
+    Class effectClass = objc_getClass("NSVisualEffectView");
+    if (!effectClass) return;
+
+    const long kVibrancyTag = 0x4F764D54L; // arbitrary 'OvMt' marker
+    id existing = reinterpret_cast<id (*)(id, SEL, long)>(objc_msgSend)(
+        nsContentView, sel_registerName("viewWithTag:"), kVibrancyTag);
+    if (existing) return; // already installed on this window
+
+    id alloc = reinterpret_cast<id (*)(Class, SEL)>(objc_msgSend)(
+        effectClass, sel_registerName("alloc"));
+    if (!alloc) return;
+
+    // A generously oversized frame, combined with the width/height-sizable
+    // autoresizing mask below, avoids ever needing to read back the parent
+    // view's current bounds (see the OvNSRect comment above) — the view
+    // snaps to fit as soon as it's added and the window resizes it.
+    using InitWithFrameFn = id (*)(id, SEL, OvNSRect);
+    const OvNSRect bigRect{0, 0, 100000, 100000};
+    id effectView = reinterpret_cast<InitWithFrameFn>(objc_msgSend)(
+        alloc, sel_registerName("initWithFrame:"), bigRect);
+    if (!effectView) return;
+
+    // material 21 = NSVisualEffectMaterialUnderWindowBackground (matches
+    // the system's own window-chrome blur since Big Sur); blendingMode 0 =
+    // BehindWindow; state 1 = Active (stays lit even when not key, like
+    // Mica). Values passed as plain longs rather than named constants since
+    // the enum symbols require an extra AppKit.h/framework header this
+    // objc/runtime-only file doesn't otherwise need.
+    reinterpret_cast<void (*)(id, SEL, long)>(objc_msgSend)(
+        effectView, sel_registerName("setMaterial:"), 21L);
+    reinterpret_cast<void (*)(id, SEL, long)>(objc_msgSend)(
+        effectView, sel_registerName("setBlendingMode:"), 0L);
+    reinterpret_cast<void (*)(id, SEL, long)>(objc_msgSend)(
+        effectView, sel_registerName("setState:"), 1L);
+    // NSViewWidthSizable (2) | NSViewHeightSizable (16).
+    reinterpret_cast<void (*)(id, SEL, unsigned long)>(objc_msgSend)(
+        effectView, sel_registerName("setAutoresizingMask:"), 2UL | 16UL);
+    reinterpret_cast<void (*)(id, SEL, long)>(objc_msgSend)(
+        effectView, sel_registerName("setTag:"), kVibrancyTag);
+
+    // Insert behind every existing subview (NSWindowBelow = -1) so Qt's own
+    // content keeps painting on top of the blur instead of being hidden by
+    // it; relativeTo: nil means "relative to all other views".
+    using AddSubviewFn = void (*)(id, SEL, id, long, id);
+    reinterpret_cast<AddSubviewFn>(objc_msgSend)(
+        nsContentView, sel_registerName("addSubview:positioned:relativeTo:"),
+        effectView, -1L, static_cast<id>(nullptr));
+
+    // alloc+init left us owning one reference; addSubview: took its own, so
+    // release ours to avoid leaking the view (it stays alive, held by the
+    // view hierarchy).
+    reinterpret_cast<void (*)(id, SEL)>(objc_msgSend)(
+        effectView, sel_registerName("release"));
+}
 #endif
 
 // Qt.
@@ -110,6 +192,30 @@ static const QStringList COLUMNS = {
     "Best ms", "Avrg ms", "Wrst ms", "Last ms", "Jttr ms"
 };
 
+// kResizeMargin, ovEdgesAt() and ovCursorForEdges() now live in MainWindow.h
+// (Q_OS_LINUX section, near TitleBarWidget) so TitleBarWidget can share them
+// for its own edge detection along the top of the window.
+
+#ifdef Q_OS_LINUX
+// Last-known system light/dark preference on Linux. Populated once from a
+// live query the first time MainWindow::isWindowsDarkMode() runs (Qt >=
+// 6.5: QStyleHints::colorScheme(); older Qt6: not used, see the palette-
+// inference fallback further down), then kept in sync by whichever live
+// signal actually fires for a given desktop - the colorSchemeChanged
+// handler in MainWindow's constructor (Qt >= 6.5 only) and/or
+// onPortalColorSchemeChanged() (any Qt version; see its own comment for why
+// both exist) - never by re-querying colorScheme() again.
+//
+// Some Linux platform-theme integrations emit colorSchemeChanged correctly
+// on every toggle, but let the colorScheme() property itself go stale
+// after the first transition (it stops tracking further changes even
+// though the signal keeps firing with the right value). MainWindow's own
+// theme only ever trusts the signal's parameter and never re-polls
+// colorScheme(), so it stays correct through any number of toggles.
+static bool s_linuxSystemDarkCache = false;
+static bool s_linuxSystemDarkCacheValid = false;
+#endif
+
 // Put text on the Windows clipboard as UTF-16. No-op for empty text or if the
 // clipboard can't be opened.
 static void copyTextToClipboard(const QString& text)
@@ -161,8 +267,66 @@ MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
     setWindowTitle(OPENMTR_VERSION_TITLE);
-    setMinimumSize(1100, 500);
-    resize(1300, 650);
+    // 950px so the window can still be snapped side-by-side on a 1920-wide
+    // (FullHD) display; the toolbar no longer fits everything at that width,
+    // so updateToolbarResponsiveLayout() shrinks the target/hostname input
+    // to compensate - see its own comment for how.
+#ifdef Q_OS_LINUX
+    // On Linux, width()/height() include the transparent kShadowMargin
+    // gutter reserved on every side for the hand-painted drop shadow (see
+    // setupUi()) - it eats into the widget's own size instead of sitting
+    // outside it like a real compositor shadow would. Without adding it
+    // back here, the visible card would end up 2*kShadowMargin px smaller
+    // in each dimension than the same numbers give on Windows/macOS, where
+    // there's no such gutter.
+    setMinimumSize(950 + 2 * kShadowMargin, 500 + 2 * kShadowMargin);
+    resize(1200 + 2 * kShadowMargin, 550 + 2 * kShadowMargin);
+    // Without an explicit position, a freshly-launched window can land
+    // flush (or within kSnapEdgeTolerance) against its screen's available-
+    // geometry edge purely as the window manager's default placement -
+    // there's no saved geometry to restore here, so this is the *only* way
+    // the window can appear "already snapped" at startup. currentGutter()
+    // can't tell that apart from an actual user-initiated snap/tile, so it
+    // zeroes the gutter on that edge, making the layout margins asymmetric
+    // instead of the uniform kShadowMargin this file's math above assumes
+    // - which both skews the visible card off-centre in the window and
+    // throws off anything measured from a left-anchored widget position
+    // (e.g. the Start/Stop button alignment in setupUi(), which combines
+    // that with a right-edge-derived offset that's unaffected). Centering
+    // on the screen up front keeps a fresh launch away from that edge
+    // entirely, while leaving the actual snap/tile handling (resizeEvent()/
+    // moveEvent()/changeEvent() -> syncLinuxGutter()) untouched for when
+    // the user genuinely does snap the window later.
+    if (const QScreen* scr = screen()) {
+        const QRect avail = scr->availableGeometry();
+        move(avail.center().x() - width() / 2, avail.center().y() - height() / 2);
+    }
+#else
+    setMinimumSize(950, 500);
+    resize(1200, 550);
+#endif
+
+#ifdef Q_OS_LINUX
+    // Unlike Windows (which keeps its native frame and hides it via
+    // WM_NCCALCSIZE — see applyFramelessStyle()/nativeEvent()) there's no
+    // "native frame, invisible" trick on X11/Wayland, so this goes fully
+    // frameless and paints its own background — see paintEvent() — to get
+    // the same rounded-corners-everywhere look without relying on whatever
+    // the window manager's decoration theme happens to do.
+    setWindowFlag(Qt::FramelessWindowHint);
+    setAttribute(Qt::WA_TranslucentBackground);
+    setMouseTracking(true);
+    // Cut the initial click-through input shape (and correct the layout
+    // gutter set above, in case the window opens already snapped to a
+    // screen edge) once the event loop starts - same reasoning as the
+    // applyFramelessStyle()/applyWin11Chrome() singleShot further down:
+    // winId() forces the native window into existence, and doing that
+    // mid-constructor, before setupUi() has finished building the rest of
+    // the window, is asking for trouble. Every later geometry change
+    // (resize, move, maximize/restore) is kept in sync by
+    // resizeEvent()/moveEvent()/changeEvent().
+    QTimer::singleShot(0, this, [this]() { syncLinuxGutter(); });
+#endif
 
     m_darkMode = isWindowsDarkMode();
     qApp->setStyle(new NoFocusRectStyle(qApp->style()));
@@ -201,14 +365,60 @@ MainWindow::MainWindow(QWidget* parent)
     m_warmupTimer->setInterval(1500);
     connect(m_warmupTimer, &QTimer::timeout, this, &MainWindow::onWarmupEnd);
 
+#ifdef Q_OS_LINUX
+    // Windows gets its light/dark switch via WM_SETTINGCHANGE in
+    // nativeEvent(); on Linux, Qt >= 6.5's QStyleHints::colorSchemeChanged
+    // is the equivalent — a signal that fires only when the desktop's
+    // light/dark preference actually changes (via the XDG portal or the
+    // gtk3 platform theme plugin), never spuriously just because the
+    // in-app theme button (onToggleTheme()) has since diverged from it.
+    // Requires Qt >= 6.5 (see build.yml: the Linux CI build's apt-packaged
+    // Qt is 6.10+), hence the version guard for anyone building against an
+    // older local Qt.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged,
+            this, [this](Qt::ColorScheme scheme) {
+        const bool newDark = (scheme == Qt::ColorScheme::Dark);
+        s_linuxSystemDarkCache = newDark;
+        s_linuxSystemDarkCacheValid = true;
+        if (newDark) applyDarkTheme();
+        else          applyLightTheme();
+    });
+#endif
+    // Belt-and-suspenders alongside the QStyleHints connect above:
+    // QStyleHints::colorSchemeChanged depends on Qt's own platform-theme
+    // plugin (gtk3/kde) picking up the change, which is confirmed broken on
+    // several current distro/DE combinations - e.g. it can simply never
+    // fire under GNOME Shell even though the OS setting does change (Qt
+    // forum: "colorSchemeChanged signal literally never emits under Fedora
+    // Rawhide under Gnome Shell or KDE Plasma 6, no matter how you debug").
+    // This subscribes directly to the desktop-portal DBus signal that GNOME
+    // and KDE both implement independently of that broken plugin path, so
+    // live theme switching keeps working even when the Qt signal doesn't
+    // fire. No-op if no portal is running (e.g. a bare WM with no
+    // xdg-desktop-portal).
+    QDBusConnection::sessionBus().connect(
+        QStringLiteral("org.freedesktop.portal.Desktop"),
+        QStringLiteral("/org/freedesktop/portal/desktop"),
+        QStringLiteral("org.freedesktop.portal.Settings"),
+        QStringLiteral("SettingChanged"),
+        this, SLOT(onPortalSettingChanged(QString,QString,QDBusVariant)));
+#endif
+
     QTimer::singleShot(50, this, [this]() {
         applyFramelessStyle();
         applyWin11Chrome(m_darkMode);
         if (m_titleBar) m_titleBar->setMaximized(isMaximized());
+        updateToolbarResponsiveLayout();
     });
     m_targetEdit->setFocus();
 
-    checkForUpdates();
+    // Delayed 5s after startup rather than called immediately: an outbound
+    // network request fired the instant the window appears reads as
+    // startup "phone home" behaviour to AV heuristics; a short delay after
+    // the UI has settled is a less conspicuous pattern for the exact same
+    // one-shot-per-launch check.
+    QTimer::singleShot(5000, this, &MainWindow::checkForUpdates);
 
     auto* scCopy   = new QShortcut(QKeySequence::Copy, this);
     auto* scExport = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_S), this);
@@ -231,8 +441,14 @@ MainWindow::MainWindow(QWidget* parent)
     tuneEditShortcuts(m_targetEdit);   // the app opens with the target field focused
 }
 
-// Members tear themselves down; nothing to do by hand.
-MainWindow::~MainWindow() = default;
+// Members tear themselves down; nothing to do by hand, except unhook the
+// qApp-wide event filter installed for Linux's borderless-resize handling.
+MainWindow::~MainWindow()
+{
+#ifdef Q_OS_LINUX
+    qApp->removeEventFilter(this);
+#endif
+}
 
 // Current ICMP payload size from the spin box (IOpenMTROptionsProvider).
 unsigned MainWindow::getPingSize() const noexcept { return static_cast<unsigned>(m_pingSizeBox->value()); }
@@ -341,18 +557,46 @@ void MainWindow::setupUi()
     auto* central = new QWidget(this);
     central->setObjectName(QStringLiteral("centralWidget"));
     setCentralWidget(central);
-    central->installEventFilter(this);
     auto* mainLayout = new QVBoxLayout(central);
+#ifdef Q_OS_LINUX
+    // Reserve a transparent gutter around the actual UI for paintEvent()'s
+    // drop shadow to be painted into (see kShadowMargin in MainWindow.h).
+    // Collapses to 0 the instant the window is maximized, via changeEvent()
+    // - same trigger as the corner-radius toggle paintEvent() already does.
+    // Starts uniform since the window isn't placed on a screen yet at this
+    // point in construction; the deferred singleShot below (see ctor) corrects
+    // it for an already-snapped starting position via currentGutter().
+    m_mainLayout = mainLayout;
+    const int gutter = isMaximized() ? 0 : kShadowMargin;
+    mainLayout->setContentsMargins(gutter, gutter, gutter, gutter);
+    // The gutter is bare centralWidget background (transparent - see
+    // applyDarkTheme()/applyLightTheme()) with no child widget over it, so
+    // centralWidget needs its own mouse tracking to report hover there at
+    // all; see eventFilter()'s edge-detection branch below.
+    central->setMouseTracking(true);
+#else
     mainLayout->setContentsMargins(0, 0, 0, 0);
+#endif
     mainLayout->setSpacing(0);
 
-#ifdef Q_OS_WIN
+#if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
     m_titleBar = new TitleBarWidget(this);
     m_titleBar->setTitle(windowTitle());
     m_titleBar->setDark(m_darkMode);
     mainLayout->addWidget(m_titleBar);
 #else
     m_titleBar = nullptr;
+#endif
+
+#ifdef Q_OS_LINUX
+    // The shadow gutter above now separates every child - title bar,
+    // toolbar, table - from the window's physical edges on all four sides,
+    // so the whole resize border (including the corners TitleBarWidget used
+    // to own itself) is handled uniformly here: whichever widget the
+    // qApp-wide filter reports underneath the cursor (centralWidget itself,
+    // over the gutter) is checked against the real window edges in
+    // eventFilter() below.
+    qApp->installEventFilter(this);
 #endif
 
     m_toolbar = new QWidget(this);
@@ -373,7 +617,7 @@ void MainWindow::setupUi()
     m_targetEdit->setFrame(false);
     m_targetEdit->setAttribute(Qt::WA_Hover);
     m_targetEdit->setCursor(Qt::IBeamCursor);
-    m_targetEdit->setFixedWidth(395); m_targetEdit->setFixedHeight(32);
+    m_targetEdit->setFixedWidth(kTargetEditDefaultWidth); m_targetEdit->setFixedHeight(32);
     m_targetEdit->setContextMenuPolicy(Qt::NoContextMenu);
     connect(m_targetEdit, &QLineEdit::returnPressed, this, &MainWindow::onStartStop);
 
@@ -621,29 +865,15 @@ void MainWindow::setupUi()
     m_table->horizontalHeader()->setMinimumSectionSize(1);
     m_table->setColumnWidth(ColHop, 54);
     for (int c : {ColAsn, ColSent, ColRecv, ColBest, ColAvrg, ColWrst, ColLast, ColJttr})
-        m_table->setColumnWidth(c, 70);
+        m_table->setColumnWidth(c, 65);
     m_table->setColumnWidth(ColLoss, 140);
     Q_ASSERT(COLUMNS.size() == ColCount);
     m_table->setColumnWidth(ColCount,     7);
     m_table->setColumnWidth(ColCount + 1, 7);
 
-    // Align the Start/Stop button's left edge with the Loss column's bar at
-    // the startup window width by trimming the target input. Real layouted
-    // positions are measured, so fonts and DPI are accounted for. Columns
-    // right of (and including) Loss are all fixed-width, so the bar's x is
-    // derived from the right edge; the bar group is centred inside the cell
-    // exactly as the item delegate lays it out.
-    QTimer::singleShot(0, this, [this]() {
-        const int lossCellX = width() - (140 + 7 * 70 + 7);
-        const QFontMetrics fm(m_table->font());
-        const int numCellW  = fm.horizontalAdvance(QStringLiteral("100"));
-        const int groupW    = 80 + 8 + numCellW;            // track + gap + number
-        const int barX      = lossCellX + (140 - groupW) / 2;
-        const int btnX      = m_startStopBtn->mapTo(this, QPoint(0, 0)).x();
-        const int newWidth  = m_targetEdit->width() - (btnX - barX);
-        if (newWidth >= 200 && newWidth != m_targetEdit->width())
-            m_targetEdit->setFixedWidth(newWidth);
-    });
+    // Align the Start/Stop button's left edge with the Loss column's bar by
+    // trimming the target input - see alignTargetEditToLossBar() and
+    // scheduleButtonAlignment() (driven from showEvent()) for how.
 
     for (int c = 0; c < COLUMNS.size(); ++c) {
         QString name = COLUMNS[c];
@@ -677,6 +907,132 @@ void MainWindow::setupUi()
     mainLayout->addWidget(m_stack);
 }
 
+// Measures the Loss column's bar position from the table's own (fixed,
+// platform-independent) column widths, then trims m_targetEdit so the
+// Start/Stop button's real, laid-out left edge lands exactly there. Because
+// the correction is derived from m_startStopBtn's *actual* post-layout
+// position rather than a hand-summed guess, it's already self-correcting
+// against everything to its left having a different size on a different
+// platform - toolLabel/pingSizeLabel/bytesLabel text metrics, the IPv6
+// checkbox's native indicator, and so on.
+//
+// Native style metrics for widgets to its left (the IPv6 checkbox's
+// indicator, a spin-box's arrow glyph on Windows) can keep settling for a
+// little while after the window first appears, so a single measurement
+// isn't reliable on its own. This reports back whether it actually had to
+// move anything, so scheduleButtonAlignment() can keep re-measuring and
+// re-correcting over a short window until things are stable.
+bool MainWindow::alignTargetEditToLossBar()
+{
+    if (!m_toolbar || !m_targetEdit || !m_table || !m_startStopBtn) return false;
+    // Deliberately NOT using m_table->horizontalHeader()->sectionViewportPosition()
+    // here: at the point this first runs, m_table isn't the QStackedWidget's
+    // current page yet (the app opens on the placeholder page, before any
+    // trace has started), and the Stretch columns (Hostname/IP) aren't
+    // reliably sized until it is. Going from the window's own right edge
+    // instead sidesteps needing the Stretch columns at all: this top-level
+    // window always has real, current geometry (it was resized in the
+    // constructor), and every column from Loss rightward is Fixed, so
+    // querying their actual columnWidth() - rather than hand-summing literal
+    // pixel counts - is safe to do regardless of the table's own show state:
+    // Fixed columns report whatever setColumnWidth() gave them independent
+    // of the table's overall size, unlike the Stretch columns to Loss's left.
+#ifdef Q_OS_LINUX
+    // On Linux, width() includes the transparent kShadowMargin gutter
+    // reserved on every side for the hand-painted drop shadow (see
+    // setupUi()'s Q_OS_LINUX branch) - the card's actual right edge
+    // sits currentGutter().right() px in from width(), not at it.
+    const int rightGutter = currentGutter().right();
+#else
+    const int rightGutter = 0;
+#endif
+    // setupUi() moves the ColCount spacer column to visual index 0, ahead
+    // of Hop - it's the padding on the table's *left* edge, not its right -
+    // so it has to be skipped here even though its logical index falls
+    // inside [ColLoss, ColCount+1]; only ColCount+1 (the other spacer,
+    // which keeps its default position after Jttr) belongs on this side.
+    int rightOfLossWidth = 0;
+    for (int c = ColLoss; c <= ColCount + 1; ++c) {
+        if (c == ColCount) continue;
+        rightOfLossWidth += m_table->columnWidth(c);
+    }
+    const int lossCellX = width() - rightGutter - rightOfLossWidth;
+    const QFontMetrics fm(m_table->font());
+    const int numCellW  = fm.horizontalAdvance(QStringLiteral("100"));
+    const int groupW    = 80 + 8 + numCellW;            // track + gap + number
+    const int barX      = lossCellX + (m_table->columnWidth(ColLoss) - groupW) / 2;
+    const int btnX      = m_startStopBtn->mapTo(this, QPoint(0, 0)).x();
+    const int newWidth  = m_targetEdit->width() - (btnX - barX);
+    if (newWidth >= 200 && newWidth != m_targetEdit->width()) {
+        m_targetEdit->setFixedWidth(newWidth);
+        m_targetEditIdealWidth = newWidth;
+        return true;
+    }
+    return false;
+}
+
+// Keeps re-running alignTargetEditToLossBar() roughly once per frame for a
+// fixed budget of attempts, so the Start/Stop button stays aligned with the
+// Loss bar even while native-style metrics for widgets to its left are still
+// settling. Re-checking unconditionally for the whole budget costs nothing
+// once things are stable: alignTargetEditToLossBar() is a cheap no-op
+// whenever the button is already in the right place.
+void MainWindow::scheduleButtonAlignment(int attemptsLeft)
+{
+    if (attemptsLeft <= 0) return;
+    alignTargetEditToLossBar();
+    QTimer::singleShot(16, this, [this, attemptsLeft]() {
+        scheduleButtonAlignment(attemptsLeft - 1);
+    });
+}
+
+// Below the 1100px minimum, the toolbar's addStretch() - the gap between
+// the target/ping/IPv6/Start group on the left and the Copy/Export/theme/info
+// group on the right - should keep shrinking towards 0 as the window narrows,
+// the same way it would with no intervention at all: Qt already handles that
+// on its own, since addStretch() is the only expanding item in the row. Only
+// once that gap has reached its own natural floor - the plain 8px inter-item
+// spacing, same as every other adjacent-widget pair in this toolbar (e.g.
+// Copy->Export) - should m_targetEdit start giving up width to keep shrinking
+// further. Grows back towards m_targetEditIdealWidth (not a hardcoded
+// default) as space frees up, so the Start/Stop-button alignment tuning above
+// stays intact.
+//
+// Asking the layout for its own minimumSize() to find that floor - rather
+// than hand-summing every item's sizeHint() plus itemCount-1 lots of the
+// layout's spacing() - is the same measurement Qt's layout engine uses
+// internally, so it can't drift out of sync with the real spacing rules
+// (spacer items like addSpacing()/addStretch() only ever contribute one
+// automatic gap in practice, which a blanket "spacing per adjacent pair"
+// sum would double-count). The measurement is taken at m_targetEdit's
+// *current* width and corrected algebraically for what it would be at
+// m_targetEditIdealWidth, rather than temporarily resizing m_targetEdit to
+// ideal just to measure - which would briefly assert a wider minimum size
+// on the toolbar (and this top-level window) than the current width, right
+// in the middle of a resize.
+void MainWindow::updateToolbarResponsiveLayout()
+{
+    if (!m_toolbar || !m_targetEdit) return;
+    auto* tbLayout = qobject_cast<QHBoxLayout*>(m_toolbar->layout());
+    if (!tbLayout) return;
+
+    const int neededAtIdeal = tbLayout->minimumSize().width()
+                             - m_targetEdit->width() + m_targetEditIdealWidth;
+
+    const int deficit = neededAtIdeal - m_toolbar->width();
+    int targetWidth = deficit > 0 ? m_targetEditIdealWidth - deficit : m_targetEditIdealWidth;
+    targetWidth = qMax(targetWidth, kTargetEditMinWidth);
+    if (targetWidth != m_targetEdit->width()) {
+        m_targetEdit->setFixedWidth(targetWidth);
+        // Keep the clear-button's position (computed from m_targetEdit's
+        // width - see setupUi()) in sync if it's currently showing. The
+        // focus-accent underline needs no equivalent call here - unlike the
+        // clear button, InputAccentBar re-syncs its own geometry from this
+        // resize automatically (see its event filter in MainWindow.h).
+        if (m_targetClearUpdate) m_targetClearUpdate();
+    }
+}
+
 // ==========================================================================
 //  Theming
 // ==========================================================================
@@ -690,10 +1046,63 @@ bool MainWindow::isWindowsDarkMode()
         L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
         L"AppsUseLightTheme", RRF_RT_DWORD, nullptr, &value, &size);
     return value == 0;
-#else
+#elif defined(Q_OS_LINUX) && QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    // See s_linuxSystemDarkCache above: only ever queried live once, here,
+    // on first use — every update after that comes from the
+    // colorSchemeChanged signal handler instead.
+    if (!s_linuxSystemDarkCacheValid) {
+        s_linuxSystemDarkCache = QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark;
+        s_linuxSystemDarkCacheValid = true;
+    }
+    return s_linuxSystemDarkCache;
+#elif QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    // QStyleHints::colorScheme()/Qt::ColorScheme were added in Qt 6.5.
     return QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark;
+#else
+    // Older Qt6 (e.g. some distro-packaged Linux builds): no direct "is the
+    // system in dark mode" query, so infer it from the default palette —
+    // a dark theme's window background reads darker than its window text.
+    const QPalette pal = QGuiApplication::palette();
+    return pal.color(QPalette::WindowText).lightness() >
+           pal.color(QPalette::Window).lightness();
 #endif
 }
+
+#ifdef Q_OS_LINUX
+// Handles org.freedesktop.portal.Settings' SettingChanged signal (connected
+// in the constructor, unfiltered - it fires for every namespace/key pair,
+// so this dispatches on the ones this app cares about).
+//
+// color-scheme: applies the theme the same way the QStyleHints path does.
+// Per the xdg-desktop-portal spec, value's payload for this key is a single
+// uint32: 0 = no preference, 1 = prefer dark, 2 = prefer light - see
+// https://flatpak.github.io/xdg-desktop-portal/#gdbus-org.freedesktop.portal.Settings
+//
+// accent-color: re-applies whichever theme is currently active, so m_accent
+// (read fresh via ovSystemAccentShade() -> linuxSystemAccentColor() at the
+// top of applyDarkTheme()/applyLightTheme()) and every stylesheet built from
+// it pick up the new colour immediately, without needing a light/dark
+// toggle first.
+void MainWindow::onPortalSettingChanged(const QString& ns, const QString& key, const QDBusVariant& value)
+{
+    if (ns != QLatin1String("org.freedesktop.appearance"))
+        return;
+
+    if (key == QLatin1String("color-scheme")) {
+        const bool newDark = value.variant().toUInt() == 1;
+        s_linuxSystemDarkCache = newDark;
+        s_linuxSystemDarkCacheValid = true;
+        if (newDark) applyDarkTheme();
+        else         applyLightTheme();
+        return;
+    }
+
+    if (key == QLatin1String("accent-color")) {
+        if (m_darkMode) applyDarkTheme();
+        else            applyLightTheme();
+    }
+}
+#endif
 
 // Apply the dark theme: stylesheet, accent colour, text palettes and themed
 // sub-widgets, then refresh the Win11 chrome and the app icon.
@@ -768,10 +1177,13 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
     sheet.replace("$BRDBOT",   ovAccentBlend(QColor(0, 0, 0),       m_accent, 35.0 / 255.0)); // bottom elevation
     sheet.replace("$BRDPRESS", ovAccentBlend(m_accent, QColor(32, 32, 32), 0.80));    // pressed fill twin, over dark Mica
     // On Windows the DWM Mica backdrop paints the actual window background,
-    // so the central widget stays transparent to show it through. macOS has
-    // no Mica equivalent, so it gets a real opaque fill instead.
+    // so the central widget stays transparent to show it through. On Linux,
+    // MainWindow::paintEvent() paints an equivalent flat rounded background
+    // itself for the same reason. macOS has no Mica equivalent (and uses the
+    // native title bar, not this frameless setup), so it gets a real opaque
+    // fill instead.
     QString centralBg = "#centralWidget { background-color: #202020; }";
-#ifdef Q_OS_WIN
+#if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
     centralBg = "#centralWidget { background-color: transparent; }";
 #endif
     sheet.replace("$CENTRAL_BG", centralBg);
@@ -803,7 +1215,11 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
     }
     for (auto* w : m_inputs)
         applyInputIdleStyle(w);
+#ifdef Q_OS_LINUX
+    updateTableCorners();
+#else
     m_table->viewport()->setStyleSheet("background-color: rgba(10,12,20,0.75);");
+#endif
     if (m_tableHeader) m_tableHeader->setDark(true);
     if (m_tableScroll) m_tableScroll->setDark(true);
     if (m_ipv6Check)   m_ipv6Check->setDark(true);
@@ -890,7 +1306,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
     sheet.replace("$BRDBOT",   ovAccentBlend(QColor(0, 0, 0),       m_accent, 102.0 / 255.0)); // bottom elevation
     sheet.replace("$BRDPRESS", ovAccentBlend(m_accent, QColor(243, 243, 243), 0.80)); // pressed fill twin, over light Mica
     QString centralBg = "#centralWidget { background-color: #f3f3f3; }";
-#ifdef Q_OS_WIN
+#if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
     centralBg = "#centralWidget { background-color: transparent; }";
 #endif
     sheet.replace("$CENTRAL_BG", centralBg);
@@ -921,7 +1337,11 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
     }
     for (auto* w : m_inputs)
         applyInputIdleStyle(w);
+#ifdef Q_OS_LINUX
+    updateTableCorners();
+#else
     m_table->viewport()->setStyleSheet("background-color: rgba(255,255,255,0.75);");
+#endif
     if (m_tableHeader) m_tableHeader->setDark(false);
     if (m_tableScroll) m_tableScroll->setDark(false);
     if (m_ipv6Check)   m_ipv6Check->setDark(false);
@@ -943,11 +1363,20 @@ void MainWindow::onToggleTheme()
     else            applyDarkTheme();
 }
 
-// Load the icon matching the current theme for the window and title bar.
+// Load the app icon for the window and title bar. The icon is the same in
+// both themes, so this doesn't branch on m_darkMode; it's still called from
+// applyLightTheme()/applyDarkTheme() so the title bar icon is (re)applied
+// whenever the title bar itself is (re)styled.
+// PNG rather than ICO: decoding .ico needs QICOPlugin, and the only place
+// that still genuinely requires a real .ico file is app.rc.in, which embeds
+// app_icon.ico as the .exe's own resource icon — Windows itself demands
+// that format there, seen in Explorer/the taskbar before the app is even
+// running. This runtime icon has no such constraint, and PNG decoding is
+// always built into Qt on every platform, so app_icon.png (see resources.qrc)
+// covers Windows/Linux/macOS alike with no plugin dependency.
 void MainWindow::updateAppIcon()
 {
-    const QIcon icon(m_darkMode ? QStringLiteral(":/app_dark.ico")
-                                : QStringLiteral(":/app_light.ico"));
+    const QIcon icon(QStringLiteral(":/app_icon.png"));
     setWindowIcon(icon);
     if (m_titleBar) m_titleBar->setIcon(icon);
 }
@@ -975,6 +1404,20 @@ void MainWindow::applyWin11Chrome(bool dark)
 // ==========================================================================
 //  Input-field styling
 // ==========================================================================
+
+// Position and size an input's focus-accent underline (see InputAccentBar)
+// to match that input's *current* geometry. Called from updateInputStyle()
+// below whenever the bar becomes visible. InputAccentBar itself keeps this
+// in sync afterwards through its own event filter on the input, so nothing
+// else needs to re-call this just because an input was resized elsewhere
+// (e.g. updateToolbarResponsiveLayout() shrinking m_targetEdit): this works
+// automatically for any input with an accent bar, focused or not.
+void MainWindow::updateInputAccentGeometry(QWidget* input, InputAccentBar* accent)
+{
+    if (!input || !accent) return;
+    const int thickness = 2;
+    accent->setBar(input->width(), input->height(), thickness, 4.0, m_accent);
+}
 
 // Style one input control for its state (idle / active / keyboard-focused),
 // including showing or hiding the accent underline.
@@ -1012,9 +1455,7 @@ void MainWindow::updateInputStyle(QWidget* input, InputAccentBar* accent, bool a
             QStringLiteral("; padding: 0px 6px 0px 9px; }") + innerEditRule);
 
         if (accent) {
-            const int thickness = 2;
-            accent->setGeometry(0, input->height() - thickness, input->width(), thickness);
-            accent->setBar(input->width(), input->height(), thickness, 4.0, m_accent);
+            updateInputAccentGeometry(input, accent);
             accent->raise();
             accent->show();
         }
@@ -1116,6 +1557,22 @@ void MainWindow::applyFramelessStyle()
     ::SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                    SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE |
                    SWP_NOZORDER | SWP_NOACTIVATE);
+
+    // nativeEvent()'s WM_NCCALCSIZE handler hands back the *entire* window
+    // rect as the client rect - but that's true from this window's very
+    // first WM_NCCALCSIZE, which fires well before WS_CAPTION is removed
+    // just above. So the constructor's resize(1200, 550) was translated
+    // into a window rect sized for a *standard* caption bar + resize
+    // border on top of that 1200x550, on the assumption those would eat
+    // into it as usual - space that then never actually gets reserved once
+    // WM_NCCALCSIZE keeps handing the whole rect back as client area. The
+    // window ends up visibly larger than requested by roughly a caption
+    // bar's worth of height and a border's worth of width. SWP_NOSIZE above
+    // deliberately leaves the outer size alone during the restyle itself;
+    // correct it back down to what was actually asked for now that the
+    // frame situation has settled.
+    if (!isMaximized())
+        resize(1200, 550);
 #endif
 }
 
@@ -1399,6 +1856,62 @@ QString MainWindow::cellTooltipText(const QModelIndex& idx) const
 // and Enter handling for inputs and buttons.
 bool MainWindow::eventFilter(QObject* obj, QEvent* event)
 {
+#ifdef Q_OS_LINUX
+    // There's no inset "dead zone" widget — the toolbar/table sit flush to
+    // the window edge — so the left/right/bottom resize grab band is
+    // detected here instead, from whatever widget the qApp-wide filter
+    // installed in setupUi() happens to report. The cursor is applied as an
+    // application-wide override rather than via a specific widget's
+    // setCursor(), since arbitrary interior widgets (buttons, the table,
+    // etc.) may be the ones reporting the event right at the border, and
+    // none of them should have to know about edge-resizing themselves.
+    // The title bar owns the entire top strip itself (including the
+    // top-left/top-right corners — see TitleBarWidget) and only ever wants a
+    // plain drag there, never a resize cursor, so it's treated the same way
+    // as being maximized below: any override already active gets cleared,
+    // rather than the whole block being skipped for it — skipping outright
+    // would leave a resize cursor stuck on screen whenever the pointer
+    // crosses from the edge-detection band straight onto the title bar,
+    // since nothing would be left to restore it.
+    if (auto* w = qobject_cast<QWidget*>(obj); w && w->window() == this) {
+        const bool overTitleBar = m_titleBar && (w == m_titleBar || m_titleBar->isAncestorOf(w));
+        if (isMaximized() || overTitleBar) {
+            if (m_edgeCursorActive) {
+                QGuiApplication::restoreOverrideCursor();
+                m_edgeCursorActive = false;
+            }
+        } else if (event->type() == QEvent::MouseMove) {
+            auto* me = static_cast<QMouseEvent*>(event);
+            const QPoint winPos = mapFromGlobal(w->mapToGlobal(me->pos()));
+            const Qt::Edges edges = ovEdgesAt(winPos, size(), currentGutter());
+            if (edges) {
+                if (!m_edgeCursorActive) {
+                    QGuiApplication::setOverrideCursor(ovCursorForEdges(edges));
+                    m_edgeCursorActive = true;
+                } else {
+                    QGuiApplication::changeOverrideCursor(ovCursorForEdges(edges));
+                }
+            } else if (m_edgeCursorActive) {
+                QGuiApplication::restoreOverrideCursor();
+                m_edgeCursorActive = false;
+            }
+        } else if (event->type() == QEvent::MouseButtonPress) {
+            auto* me = static_cast<QMouseEvent*>(event);
+            if (me->button() == Qt::LeftButton) {
+                const QPoint winPos = mapFromGlobal(w->mapToGlobal(me->pos()));
+                const Qt::Edges edges = ovEdgesAt(winPos, size(), currentGutter());
+                if (edges && windowHandle()) {
+                    if (m_edgeCursorActive) {
+                        QGuiApplication::restoreOverrideCursor();
+                        m_edgeCursorActive = false;
+                    }
+                    windowHandle()->startSystemResize(edges);
+                    return true;
+                }
+            }
+        }
+    }
+#endif
     // Unified Fluent tooltips for the results table: any cell tooltip (loss
     // anomalies, multipath details) plus the full text of elided Hostname/IP
     // cells is shown through the same Win11Tooltip used by the caption
@@ -1643,12 +2156,310 @@ void MainWindow::mousePressEvent(QMouseEvent* event)
     QMainWindow::mousePressEvent(event);
 }
 
+#ifdef Q_OS_LINUX
+// QPainter::drawRoundedRect() only takes a single radius for all four
+// corners, but a snapped/tiled window (see currentGutter()) needs each
+// corner squared off independently - a corner should only stay rounded if
+// neither edge meeting there is flush against the screen; a corner where
+// even one adjacent edge is flush has nowhere for the curve to sit against,
+// so it needs to be sharp like Windows' own DWM makes it. tl/tr/br/bl are
+// each either 0 (square) or the normal kWindowCornerRadius.
+static QPainterPath roundedCardPath(const QRectF& r, qreal tl, qreal tr, qreal br, qreal bl)
+{
+    QPainterPath path;
+    path.moveTo(r.left() + tl, r.top());
+    path.lineTo(r.right() - tr, r.top());
+    if (tr > 0.0) path.arcTo(QRectF(r.right() - tr * 2, r.top(), tr * 2, tr * 2), 90, -90);
+    path.lineTo(r.right(), r.bottom() - br);
+    if (br > 0.0) path.arcTo(QRectF(r.right() - br * 2, r.bottom() - br * 2, br * 2, br * 2), 0, -90);
+    path.lineTo(r.left() + bl, r.bottom());
+    if (bl > 0.0) path.arcTo(QRectF(r.left(), r.bottom() - bl * 2, bl * 2, bl * 2), 270, -90);
+    path.lineTo(r.left(), r.top() + tl);
+    if (tl > 0.0) path.arcTo(QRectF(r.left(), r.top(), tl * 2, tl * 2), 180, -90);
+    path.closeSubpath();
+    return path;
+}
+
+// Cheap stand-in for a real Gaussian blur: layered rounded rects growing
+// outward from the card's edge with a quadratically-fading alpha, which
+// reads as a soft blur without the cost of an actual blur pass - see
+// kShadowMargin's own comment in MainWindow.h for why this is hand-painted
+// rather than left to the window manager/compositor. Tuned to sit close to
+// the real DWM window shadow this app already gets for free on Windows:
+// fairly subtle and only very slightly biased downward rather than a bold
+// Material-style "lifted card", and - the detail that sells it - visibly
+// deeper while the window has focus and lighter once it doesn't, exactly
+// like DWM's own shadow has behaved since Aero. Stays strictly inside
+// kShadowMargin's reserved gutter on every side, so it's never clipped by
+// the window's own bounds.
+static void paintCardShadow(QPainter& p, const QRectF& cardRect, qreal cardRadius,
+                             bool dark, bool active)
+{
+    p.save();
+    p.setPen(Qt::NoPen);
+    // Each ring below is drawn with CompositionMode_Source rather than the
+    // default SourceOver, so a smaller/more-opaque ring drawn later cleanly
+    // replaces what a larger/fainter one left behind instead of blending on
+    // top of it. With SourceOver, every ring that reaches a given pixel adds
+    // to it, so the many overlapping rings near the card's edge compound
+    // into something far darker than maxAlpha alone suggests; with Source,
+    // maxAlpha is the actual peak opacity right at the card's edge.
+    p.setCompositionMode(QPainter::CompositionMode_Source);
+    constexpr int kSteps = 16;
+    const qreal maxAlpha = dark ? (active ? 0.24 : 0.13)
+                                 : (active ? 0.11 : 0.06);
+    // Only a slight downward bias - a real light source overhead - while
+    // staying inside kShadowMargin on every side, the bottom included.
+    const qreal dy   = kShadowMargin * 0.12;
+    const qreal tMax = kShadowMargin - dy;
+    for (int i = kSteps; i >= 1; --i) {
+        const qreal t     = tMax * (qreal(i) / kSteps);
+        const qreal fade  = 1.0 - (qreal(i) / kSteps);
+        const qreal alpha = maxAlpha * fade * fade;
+        const QRectF r = cardRect.adjusted(-t, -t + dy, t, t + dy);
+        p.setBrush(QColor(0, 0, 0, qRound(alpha * 255)));
+        p.drawRoundedRect(r, cardRadius + t * 0.5, cardRadius + t * 0.5);
+    }
+    p.restore();
+}
+
+// The frameless window's own background: a flat fill (matching whichever of
+// #202020/#f3f3f3 the current theme's central widget would otherwise use)
+// clipped to a rounded rect ("the card"), painted before any child widget so
+// it acts as the base layer everything else sits on - with, now, a soft drop
+// shadow painted into the kShadowMargin gutter around it first, and a
+// hairline border traced on top of the fill. Windows gets both of those for
+// free as part of DWM's native frame; painted by hand here since this window
+// has none. All three - shadow, border and rounded corners - collapse where
+// the gutter does: while maximized (see currentGutter()) and, per edge, when
+// snapped/tiled flush against a screen edge - matching Windows' own DWM
+// behaviour, and there's nowhere for any of them to be visible against the
+// screen edge anyway.
+void MainWindow::paintEvent(QPaintEvent* event)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const qreal radius = isMaximized() ? 0.0 : kWindowCornerRadius;
+    const QMargins gutter = currentGutter();
+    const QRectF cardRect = QRectF(rect()).adjusted(gutter.left(), gutter.top(),
+                                                      -gutter.right(), -gutter.bottom());
+    // A corner squares off the instant either of its two adjacent edges is
+    // flush (gutter 0 there) - see roundedCardPath()'s comment.
+    const qreal tl = (gutter.top()    == 0 || gutter.left()  == 0) ? 0.0 : radius;
+    const qreal tr = (gutter.top()    == 0 || gutter.right() == 0) ? 0.0 : radius;
+    const qreal br = (gutter.bottom() == 0 || gutter.right() == 0) ? 0.0 : radius;
+    const qreal bl = (gutter.bottom() == 0 || gutter.left()  == 0) ? 0.0 : radius;
+    const QPainterPath cardPath = roundedCardPath(cardRect, tl, tr, br, bl);
+    if (!gutter.isNull())
+        paintCardShadow(p, cardRect, radius, m_darkMode, isActiveWindow());
+    p.setPen(Qt::NoPen);
+    p.setBrush(m_darkMode ? QColor(0x20, 0x20, 0x20) : QColor(0xf3, 0xf3, 0xf3));
+    p.drawPath(cardPath);
+    // Hairline border, stroked right on top of the fill so its antialiasing
+    // lines up with the fill's edge exactly (see SmokeOverlay's comment
+    // further down for why a separately-rasterized path wouldn't). Same
+    // active/inactive dimming paintCardShadow() already does for the shadow,
+    // for the same reason: a real DWM border dims a touch once the window
+    // loses focus too.
+    QPen borderPen(m_darkMode ? QColor(255, 255, 255, isActiveWindow() ? 38 : 22)
+                               : QColor(0, 0, 0, isActiveWindow() ? 38 : 22));
+    borderPen.setWidthF(1.0);
+    p.setPen(borderPen);
+    p.setBrush(Qt::NoBrush);
+    p.drawPath(cardPath);
+    QMainWindow::paintEvent(event);
+}
+#endif
+
+#ifdef Q_OS_LINUX
+// The results table's viewport is the only one of the three stack pages
+// (see setupUi()) whose background isn't fully transparent: it's painted
+// with a semi-opaque fill so the table reads clearly over whatever sits
+// behind it. m_stack is flush against the window's bottom-left/bottom-right
+// edges with no margin (again, see setupUi()), so once that fill reaches
+// those corners it squares off the rounded silhouette MainWindow::paintEvent()
+// draws underneath — the empty and "discovering route" pages don't have this
+// problem since they stay transparent and let that rounded base show through.
+// Round the viewport's own corners to match, and square them off again while
+// maximized, mirroring paintEvent()'s own logic.
+void MainWindow::updateTableCorners()
+{
+    if (!m_table) return;
+    const QString bg = m_darkMode ? QStringLiteral("rgba(10,12,20,0.75)")
+                                   : QStringLiteral("rgba(255,255,255,0.75)");
+    const qreal radius = isMaximized() ? 0.0 : kWindowCornerRadius;
+    const QMargins gutter = currentGutter();
+    const qreal bl = (gutter.bottom() == 0 || gutter.left()  == 0) ? 0.0 : radius;
+    const qreal br = (gutter.bottom() == 0 || gutter.right() == 0) ? 0.0 : radius;
+    m_table->viewport()->setStyleSheet(
+        QString("background-color: %1; border-bottom-left-radius: %2px; "
+                "border-bottom-right-radius: %3px;")
+            .arg(bg)
+            .arg(bl)
+            .arg(br));
+}
+
+// Which sides of the shadow gutter (see kShadowMargin) are actually free to
+// draw/click through right now. Fully zero while maximized, same as before -
+// but also zero per-edge when the window sits flush against that edge of the
+// current screen's usable area, which is what a tiling/snap window manager
+// does to dock this window against a screen edge (or half/quarter of one)
+// without ever actually setting a maximized _NET_WM_STATE bit for it. Without
+// this, a snapped window would keep reserving the full gutter on every side
+// regardless, leaving a band of dead, uselessly-transparent space between the
+// visible card and the screen edge (or the neighbouring snapped window) that
+// a real compositor-drawn shadow would never have had in the first place.
+// kSnapEdgeTolerance absorbs the odd off-by-one a WM's own tiling math can
+// introduce when carving up the usable area between windows.
+static constexpr int kSnapEdgeTolerance = 2;
+
+QMargins MainWindow::currentGutter() const
+{
+    if (isMaximized()) return QMargins(0, 0, 0, 0);
+    QMargins g(kShadowMargin, kShadowMargin, kShadowMargin, kShadowMargin);
+    if (const QScreen* scr = screen()) {
+        const QRect avail = scr->availableGeometry();
+        const QRect win   = geometry();
+        if (qAbs(win.left()   - avail.left())   <= kSnapEdgeTolerance) g.setLeft(0);
+        if (qAbs(win.top()    - avail.top())    <= kSnapEdgeTolerance) g.setTop(0);
+        if (qAbs(win.right()  - avail.right())  <= kSnapEdgeTolerance) g.setRight(0);
+        if (qAbs(win.bottom() - avail.bottom()) <= kSnapEdgeTolerance) g.setBottom(0);
+    }
+    return g;
+}
+
+// Without this, the window's X11 input region defaults to its full bounding
+// rectangle, so the transparent kShadowMargin gutter painted by
+// paintCardShadow() still eats clicks meant for whatever sits behind it -
+// unlike a real DWM/compositor shadow, which was never part of a clickable
+// window in the first place. QWidget::setMask() can't fix this on its own:
+// it only ever sets the X Shape "bounding" region (see QXcbWindow::setMask()
+// in qtbase), which controls what gets *painted*, not what receives input -
+// setting it here would additionally clip paintCardShadow()'s output. What's
+// needed is the separate X Shape "input" region, which has no public Qt API,
+// so this talks XCB directly.
+//
+// The region isn't just the card, though: eventFilter()'s edge-detection
+// branch relies on mouse events landing within ovEdgesAt()'s resize-grab
+// band (see ovResizeBandInset() in MainWindow.h) - which, once the input
+// region stopped covering the gutter at all, stopped reaching this window
+// out there entirely, breaking edge-drag resizing. So this ships that same
+// band as a ring around the window alongside the card - X Shape accepts
+// multiple rectangles unioned together in one call, so the two just get
+// listed side by side. Where the gutter is already 0 (maximized, or a
+// snapped-flush edge - see currentGutter()), the band collapses fully
+// inside the card and the extra rectangle there is simply redundant.
+// Skipped entirely under native Wayland (nativeInterface() below returns
+// null there) - wl_surface has an input-region concept too, but Qt exposes
+// no public hook for it, and this app doesn't carry its own Wayland-client
+// glue for the sake of one cosmetic edge case.
+void MainWindow::updateLinuxInputShape()
+{
+    auto* x11App = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
+    if (!x11App) return;
+    xcb_connection_t* conn = x11App->connection();
+    if (!conn) return;
+
+    const xcb_window_t wid = static_cast<xcb_window_t>(winId());
+    const QMargins gutter = currentGutter();
+    const QRect card = QRect(rect()).adjusted(gutter.left(), gutter.top(),
+                                               -gutter.right(), -gutter.bottom());
+    if (!card.isValid()) return;
+    const QRect full = rect();
+    // Same band ovEdgesAt() checks the cursor against - straddling the
+    // card's own edge rather than sitting out at the window's raw one, so
+    // dragging to resize actually happens where the border is drawn.
+    const QMargins in = ovResizeBandInset(gutter);
+
+    // xcb_shape_rectangles() takes the window's own physical-pixel space,
+    // same as QXcbWindow::setMask() does internally (it runs the QRegion it's
+    // given through QHighDpi::toNativeLocalRegion() first) - so this scales
+    // by the DPR by hand rather than passing logical coordinates straight
+    // through, or the shape would sit wrong on any HiDPI screen.
+    const qreal dpr = devicePixelRatioF() > 0 ? devicePixelRatioF() : 1.0;
+    const auto toNative = [dpr](const QRect& r) {
+        return xcb_rectangle_t{
+            static_cast<int16_t>(qRound(r.x() * dpr)),
+            static_cast<int16_t>(qRound(r.y() * dpr)),
+            static_cast<uint16_t>(qRound(r.width()  * dpr)),
+            static_cast<uint16_t>(qRound(r.height() * dpr)),
+        };
+    };
+    const xcb_rectangle_t rects[] = {
+        toNative(card),
+        toNative(QRect(full.left(), full.top() + in.top(), full.width(), kResizeMargin)),                          // top
+        toNative(QRect(full.left(), full.bottom() - in.bottom() - kResizeMargin + 1, full.width(), kResizeMargin)), // bottom
+        toNative(QRect(full.left() + in.left(), full.top(), kResizeMargin, full.height())),                        // left
+        toNative(QRect(full.right() - in.right() - kResizeMargin + 1, full.top(), kResizeMargin, full.height())),  // right
+    };
+    xcb_shape_rectangles(conn, XCB_SHAPE_SO_SET, XCB_SHAPE_SK_INPUT,
+                          XCB_CLIP_ORDERING_UNSORTED, wid, 0, 0,
+                          sizeof(rects) / sizeof(rects[0]), rects);
+    xcb_flush(conn);
+}
+
+// Applies currentGutter() to the layout margins, the input shape and a
+// repaint in one call - the three things every geometry change (resize,
+// move, maximize/restore) needs kept in sync with each other. The table
+// viewport's own corner rounding (see updateTableCorners()) depends on this
+// same gutter state, so it's refreshed here too - otherwise it would stay
+// stuck at whatever it was the last time the theme was toggled or the
+// window was maximized/restored, showing a square notch in the table's
+// corner even after the window's own silhouette had become rounded again
+// (e.g. after un-snapping from a screen edge).
+void MainWindow::syncLinuxGutter()
+{
+    if (m_mainLayout) {
+        const QMargins g = currentGutter();
+        m_mainLayout->setContentsMargins(g.left(), g.top(), g.right(), g.bottom());
+    }
+    update();
+    updateLinuxInputShape();
+    updateTableCorners();
+}
+#endif
+
+// Fires once the window is actually on-screen. Native style metrics for
+// widgets left of the Start/Stop button (checkbox indicator size, spin-box
+// glyph width, DPI-driven re-scaling if the window ends up on a
+// different-DPI monitor than the one it was created on) can still shift for
+// a short while after that, so scheduleButtonAlignment() keeps re-aligning
+// the button for a short window rather than assuming a single measurement
+// here is final. Safe to call on every show (e.g. restoring from
+// minimized): alignTargetEditToLossBar() is a no-op once the button is
+// already in the right place.
+void MainWindow::showEvent(QShowEvent* event)
+{
+    QMainWindow::showEvent(event);
+    scheduleButtonAlignment();
+}
+
 // Re-layout the table contents while a trace is live.
 void MainWindow::resizeEvent(QResizeEvent* event)
 {
     QMainWindow::resizeEvent(event);
+    updateToolbarResponsiveLayout();
     if (m_net && m_tracing) updateTable();
+#ifdef Q_OS_LINUX
+    // Every resize can move the card rect within the window, collapse the
+    // gutter (maximizing), or change which edges sit flush against the
+    // screen (snapping/tiling) - see currentGutter() - so all of layout
+    // margins, click-through input region and paint all need re-cutting.
+    syncLinuxGutter();
+#endif
 }
+
+#ifdef Q_OS_LINUX
+// A snap/tile can also be a pure move with no resize on some WMs (e.g.
+// dragging an already-half-width window to the opposite edge), so this needs
+// its own hook alongside resizeEvent() - currentGutter() only looks at
+// geometry(), not at *how* it changed.
+void MainWindow::moveEvent(QMoveEvent* event)
+{
+    QMainWindow::moveEvent(event);
+    syncLinuxGutter();
+}
+#endif
 
 // Keep the frameless style and the maximize-button glyph in sync with the
 // window state.
@@ -1658,10 +2469,34 @@ void MainWindow::changeEvent(QEvent* event)
     if (event->type() == QEvent::WindowStateChange) {
         applyFramelessStyle();
         if (m_titleBar) m_titleBar->setMaximized(isMaximized());
+#ifdef Q_OS_LINUX
+        // Square the corners and drop the shadow gutter once maximized (see
+        // paintEvent()/setupUi()) — there's no screen space for either once
+        // the window fills the display. The resize-edge cursor itself is
+        // already cleared by isMaximized() being checked in eventFilter()'s
+        // edge-detection branch.
+        //
+        // Maximizing/restoring changes the window's geometry too, so this
+        // would normally be covered by resizeEvent() alone - but belt and
+        // suspenders costs nothing here, and some WMs are known to reorder
+        // or coalesce these events. (syncLinuxGutter() also re-syncs the
+        // table's own corner rounding - see its comment.)
+        syncLinuxGutter();
+#endif
     }
+#ifdef Q_OS_LINUX
+    else if (event->type() == QEvent::ActivationChange) {
+        // Real DWM shadows deepen when a window gains focus and lighten
+        // once it loses it (true since Aero, still true on Windows 11) -
+        // paintCardShadow() mirrors that via isActiveWindow(), so this just
+        // needs a repaint to pick up the new state.
+        update();
+    }
+#endif
 #ifdef Q_OS_MAC
     if (event->type() == QEvent::Show) {
         setMacOsDarkAppearance(winId(), m_darkMode);
+        setMacOsVibrancy(winId());
     }
 #endif
 }
@@ -2340,8 +3175,41 @@ void MainWindow::onExport()
                                         : QStringLiteral(".txt");
 #else
     // No native save-panel API used here (unlike Windows' GetSaveFileNameW);
-    // Qt's own file dialog covers the same job on macOS.
+    // Qt's own file dialog covers the same job on Linux/macOS.
     QFileDialog dialog(this, tr("Export results"));
+    dialog.setOption(QFileDialog::DontUseNativeDialog, true);
+    // QFileDialog enables a QSizeGrip in the bottom-right corner by default
+    // (QDialog::isSizeGripEnabled() is true here even though nothing in this
+    // app turns it on - confirmed by direct inspection). Under the Fusion
+    // style that draws as a small diagonal-lines square sitting on top of
+    // whatever's in that corner - here, the Cancel button - and steals the
+    // diagonal-resize cursor for that spot instead of the dialog's actual
+    // edge. The dialog stays just as resizable from its real window border
+    // without it, so this only removes the redundant/misplaced grip icon.
+    dialog.setSizeGripEnabled(false);
+    // Unlike the rest of the app, this dialog's *content* is themed off the
+    // system's own colour scheme (isWindowsDarkMode() — same query used to
+    // seed m_darkMode at startup, before the person can override it here)
+    // rather than off m_darkMode/the in-app light/dark toggle. Its titlebar
+    // is real window-manager chrome, which already themes itself off the
+    // system regardless of what the app's toggle says; deciding the content
+    // from m_darkMode instead would let the two disagree. GetSaveFileNameW
+    // on Windows never has this problem — its whole native dialog, chrome
+    // and content together, already always follows the system theme.
+    const bool dialogDark = isWindowsDarkMode();
+    // Qt cascades style sheets down the widget *parent* chain, not just the
+    // visible containment tree — so this dialog, parented to `this`, was
+    // inheriting applyDarkTheme()/applyLightTheme()'s
+    // "QWidget { background-color: transparent; color: #ffffff/black }"
+    // rule from MainWindow. With no real window transparency set up for the
+    // dialog, "transparent" fell through to solid black, leaving only the
+    // few widgets covered by ID-specific selectors (edit field, buttons)
+    // legible — reproduced and confirmed independent of system/GTK theme.
+    // Giving the dialog its own explicit stylesheet (same selector, so it
+    // wins over the inherited one) fixes the black fill.
+    dialog.setStyleSheet(dialogDark
+        ? "QWidget { background-color: #202020; color: #ffffff; }"
+        : "QWidget { background-color: #f3f3f3; color: rgba(0,0,0,0.89); }");
     dialog.setAcceptMode(QFileDialog::AcceptSave);
     dialog.setFileMode(QFileDialog::AnyFile);
     dialog.setNameFilters({

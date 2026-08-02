@@ -490,6 +490,19 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
     }
     ::fcntl(fd, F_SETFL, O_NONBLOCK);
 
+#ifdef __linux__
+    // Linux ping sockets don't hand ICMP error messages (Time Exceeded,
+    // Destination Unreachable) to a plain recvfrom() the way macOS/BSD's
+    // do — those get delivered to the socket's error queue instead, which
+    // has to be explicitly enabled and drained separately. See the
+    // POLLERR handling below. (No effect / not needed on macOS or BSD.)
+    int recverr = 1;
+    if (isV6)
+        ::setsockopt(fd, IPPROTO_IPV6, IPV6_RECVERR, &recverr, sizeof(recverr));
+    else
+        ::setsockopt(fd, IPPROTO_IP, IP_RECVERR, &recverr, sizeof(recverr));
+#endif
+
     // Per-hop schedule state — the POSIX equivalent of HopState above
     // (no OS-level wait handle, so nothing corresponding to hEvent).
     struct PosixHopState {
@@ -594,6 +607,19 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
             if (hs.pending) {
                 if (now > hs.sentTime + ECHO_REPLY_TIMEOUT) {
                     hs.pending = false;
+                    // Mirrors the Windows dispatch loop's complete() lambda,
+                    // which calls this for IP_REQ_TIMED_OUT too (see above) -
+                    // this was the one call missing here, which is why a
+                    // hop that never replies at all showed a bare "-"
+                    // instead of "Request timed out." on Linux/macOS.
+                    // Safe to call unconditionally: SetErrorName() only
+                    // writes when the hop's name is still empty, and the
+                    // instant this hop ever gets a real reply, SetAddr()/
+                    // SetAddr6() below trigger the one-time DNS resolve
+                    // that overwrites it - so an occasional timeout on an
+                    // otherwise-responding hop can never leave this text
+                    // stuck over its real hostname.
+                    SetErrorName(hs.ttl - 1, IP_REQ_TIMED_OUT);
                     RecordProbe(hs.ttl - 1, false, 0);
                 } else {
                     anyActive = true;
@@ -618,7 +644,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
         fds[0].fd     = m_stopPipe[0];
         fds[0].events = POLLIN;
         fds[1].fd     = fd;
-        fds[1].events = POLLIN;
+        fds[1].events = POLLIN | POLLERR;
 
         ULONGLONG soonest = GetTickCount64() + 250;
         for (auto& hs : hops) {
@@ -799,6 +825,108 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                 }
             }
         }
+
+#ifdef __linux__
+        // Linux-only: drain the error queue. As explained by the comment
+        // where IP_RECVERR/IPV6_RECVERR get enabled above, this — not the
+        // ordinary recvfrom() above — is how Time Exceeded and
+        // Destination Unreachable actually arrive on a Linux ping socket.
+        // Without this block every intermediate hop just silently "times
+        // out" and only the final Echo Reply (via recvfrom) is ever seen,
+        // which looks exactly like a plain ping instead of a traceroute.
+        if (fds[1].revents & POLLERR) {
+            while (true) {
+                unsigned char errBuf[512];
+                char ctrl[512];
+                sockaddr_storage from = {};
+                struct iovec iov = { errBuf, sizeof(errBuf) };
+                struct msghdr msg = {};
+                msg.msg_name       = &from;
+                msg.msg_namelen    = sizeof(from);
+                msg.msg_iov        = &iov;
+                msg.msg_iovlen     = 1;
+                msg.msg_control    = ctrl;
+                msg.msg_controllen = sizeof(ctrl);
+
+                int n = ::recvmsg(fd, &msg, MSG_ERRQUEUE);
+                if (n < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK)
+                        break;
+                    break;
+                }
+
+                struct sock_extended_err* ee = nullptr;
+                sockaddr* offender = nullptr;
+                for (struct cmsghdr* cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
+                    if ((!isV6 && cm->cmsg_level == IPPROTO_IP   && cm->cmsg_type == IP_RECVERR) ||
+                        ( isV6 && cm->cmsg_level == IPPROTO_IPV6 && cm->cmsg_type == IPV6_RECVERR)) {
+                        ee = (struct sock_extended_err*)CMSG_DATA(cm);
+                        offender = (sockaddr*)SO_EE_OFFENDER(ee);
+                        break;
+                    }
+                }
+                if (!ee)
+                    continue;
+
+                // The error queue hands back the ICMP header of our own
+                // original outgoing echo request (the one that triggered
+                // this error) as the message payload — that's where the
+                // matching sequence number comes from, same idea as the
+                // embedded-original-packet parsing above.
+                uint16_t seq = 0;
+                bool haveSeq = false;
+                if (!isV6 && n >= (int)sizeof(struct icmp)) {
+                    haveSeq = true;
+                    seq = ntohs(((struct icmp*)errBuf)->icmp_seq);
+                } else if (isV6 && n >= (int)sizeof(struct icmp6_hdr)) {
+                    haveSeq = true;
+                    seq = ntohs(((struct icmp6_hdr*)errBuf)->icmp6_seq);
+                }
+                if (!haveSeq)
+                    continue;
+
+                int hopIndex = seq >> 8;
+                if (hopIndex < 0 || hopIndex >= MAX_HOPS)
+                    continue;
+                PosixHopState& hs = hops[hopIndex];
+                if (!hs.pending || hs.sentSeq != seq)
+                    continue;
+
+                const ULONGLONG nowRecv = GetTickCount64();
+                int rtt = (int)(nowRecv - hs.sentTime);
+                if (rtt <= 0) rtt = 1;
+                hs.pending = false;
+
+                const bool isTimeExceeded = isV6 ? (ee->ee_type == ICMP6_TIME_EXCEEDED)
+                                                  : (ee->ee_type == ICMP_TIMXCEED);
+                if (isTimeExceeded) {
+                    RecordProbe(hopIndex, true, rtt);
+                    if (offender) {
+                        if (isV6) {
+                            sockaddr_in6* o6 = (sockaddr_in6*)offender;
+                            IPV6_ADDRESS_EX addrex = {};
+                            addrex.sin6_port     = o6->sin6_port;
+                            addrex.sin6_flowinfo = o6->sin6_flowinfo;
+                            addrex.sin6_scope_id = o6->sin6_scope_id;
+                            std::memcpy(addrex.sin6_addr, &o6->sin6_addr, 16);
+                            SetAddr6(hopIndex, addrex);
+                        } else {
+                            SetAddr(hopIndex, ((sockaddr_in*)offender)->sin_addr.s_addr);
+                        }
+                    }
+                } else {
+                    DWORD errStatus = IP_DEST_HOST_UNREACHABLE;
+                    if (!isV6 && ee->ee_type == ICMP_UNREACH) {
+                        if      (ee->ee_code == ICMP_UNREACH_NET)      errStatus = IP_DEST_NET_UNREACHABLE;
+                        else if (ee->ee_code == ICMP_UNREACH_PORT)     errStatus = IP_DEST_PORT_UNREACHABLE;
+                        else if (ee->ee_code == ICMP_UNREACH_PROTOCOL) errStatus = IP_DEST_PROT_UNREACHABLE;
+                    }
+                    SetErrorName(hopIndex, errStatus);
+                    RecordProbe(hopIndex, false, 0, errStatus);
+                }
+            }
+        }
+#endif
     }
 
     if (fd >= 0)

@@ -39,10 +39,12 @@
 #include <QtWidgets/QStyleOption>
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QMenu>
 #include <QtGui/QCursor>
 #include <QtGui/QScreen>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QStyleHints>
+#include <QtGui/QWindow>
 #include <QtWidgets/QWidget>
 
 // Qt — GUI.
@@ -51,7 +53,10 @@
 #include <QtGui/QPixmap>
 #include <QtGui/QPen>
 #include <QtGui/QPainterPath>
+#include <QtGui/QPainterPathStroker>
+#include <QtGui/QRegion>
 #include <QtGui/QPaintEvent>
+#include <QtGui/QShowEvent>
 #include <QtGui/QColor>
 #include <QtGui/QFont>
 #include <QtGui/QMouseEvent>
@@ -60,10 +65,12 @@
 #include <QtGui/QFocusEvent>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QDesktopServices>
+#include <QtGui/QContextMenuEvent>
 
 // Qt — core.
 #include <QtCore/QHash>
 #include <QtCore/QRectF>
+#include <QtCore/QMargins>
 #include <QtCore/QTimer>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QDateTime>
@@ -82,6 +89,35 @@
 #include <QtNetwork/QNetworkRequest>
 #include <QtNetwork/QNetworkReply>
 #include <QtNetwork/QNetworkProxy>
+
+#ifdef Q_OS_LINUX
+// Qt — DBus (live light/dark and accent-colour watching, plus a one-shot
+// synchronous accent-colour read, via org.freedesktop.portal.Settings; see
+// MainWindow::onPortalSettingChanged() and linuxSystemAccentColor() below).
+#include <QtDBus/QDBusConnection>
+#include <QtDBus/QDBusVariant>
+#include <QtDBus/QDBusMessage>
+#include <QtDBus/QDBusArgument>
+
+// X11/xcb — lets clicks in the transparent kShadowMargin gutter fall through
+// to whatever's behind the window instead of being consumed by it (see
+// MainWindow::updateLinuxInputShape()). Only affects X11/XWayland sessions:
+// there's no public Qt API for the Wayland equivalent (wl_surface's input
+// region), so under native Wayland the gutter stays clickable like today.
+#include <QtGui/qguiapplication_platform.h>
+#include <xcb/xcb.h>
+#include <xcb/shape.h>
+#endif
+
+#ifdef Q_OS_MAC
+// Cocoa runtime — used directly (no .mm/Objective-C++ file in this project)
+// to read NSColor's system accent colour, the same way ovSystemAccentShade()
+// reads the Windows registry accent palette. See macOsSystemAccentColor()
+// below and setMacOsDarkAppearance() in MainWindow.cpp for the established
+// pattern.
+#include <objc/runtime.h>
+#include <objc/message.h>
+#endif
 
 #ifdef Q_OS_WIN
 // Windows — the two defines must precede <winsock2.h>.
@@ -117,8 +153,109 @@
 //  Windows accent-colour helpers
 // ==========================================================================
 
-// Accent colour for the given theme, read from the Windows registry; returns
-// a sensible built-in default if the palette can't be read.
+#ifdef Q_OS_MAC
+// Read NSColor.controlAccentColor (macOS 10.14+) through the Cocoa runtime
+// and convert it to a QColor. Every step is nil-checked, so any surprise
+// (missing class/selector on some future macOS version) just falls through
+// to the caller's fallback instead of crashing.
+inline QColor macOsSystemAccentColor(const QColor& fallback)
+{
+    Class nsColorClass = objc_getClass("NSColor");
+    Class nsColorSpaceClass = objc_getClass("NSColorSpace");
+    if (!nsColorClass || !nsColorSpaceClass) return fallback;
+
+    id accent = reinterpret_cast<id (*)(Class, SEL)>(objc_msgSend)(
+        nsColorClass, sel_registerName("controlAccentColor"));
+    if (!accent) return fallback;
+
+    id srgb = reinterpret_cast<id (*)(Class, SEL)>(objc_msgSend)(
+        nsColorSpaceClass, sel_registerName("sRGBColorSpace"));
+    if (!srgb) return fallback;
+
+    // controlAccentColor isn't guaranteed to already be in an RGB-component
+    // colour space (it can be a catalog/pattern colour); converting first
+    // is what makes redComponent/greenComponent/blueComponent below valid.
+    id converted = reinterpret_cast<id (*)(id, SEL, id)>(objc_msgSend)(
+        accent, sel_registerName("colorUsingColorSpace:"), srgb);
+    if (!converted) return fallback;
+
+    // NSColor's component getters return CGFloat (double on 64-bit). On
+    // x86_64 this would need the dedicated objc_msgSend_fpret entry point
+    // instead of the plain one - not needed here since this project only
+    // targets Apple Silicon (arm64) on macOS, which doesn't have that ABI
+    // quirk.
+    using FpRetMsgSend = double (*)(id, SEL);
+    const auto send = reinterpret_cast<FpRetMsgSend>(objc_msgSend);
+    const double r = send(converted, sel_registerName("redComponent"));
+    const double g = send(converted, sel_registerName("greenComponent"));
+    const double b = send(converted, sel_registerName("blueComponent"));
+    return QColor(qRound(r * 255.0), qRound(g * 255.0), qRound(b * 255.0));
+}
+#endif
+
+#ifdef Q_OS_LINUX
+// Read the desktop's accent colour via the freedesktop desktop-portal
+// Settings interface (org.freedesktop.appearance / accent-color) - the same
+// portal already used elsewhere in this file for the light/dark setting.
+// Per spec the value is a struct of three doubles (r, g, b) in [0, 1]:
+// https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Settings.html
+//
+// Support depends on the portal backend (implemented by GNOME's and KDE's
+// backends, not by every WM/DE), so any failure along the way - no portal
+// running, unknown key, unexpected reply shape - just falls through to the
+// caller's fallback rather than asserting or crashing.
+inline QColor linuxSystemAccentColor(const QColor& fallback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(
+        QStringLiteral("org.freedesktop.portal.Desktop"),
+        QStringLiteral("/org/freedesktop/portal/desktop"),
+        QStringLiteral("org.freedesktop.portal.Settings"),
+        QStringLiteral("Read"));
+    msg << QStringLiteral("org.freedesktop.appearance") << QStringLiteral("accent-color");
+
+    // Blocking call with a short timeout: this only ever runs on a theme
+    // apply (app start, or a light/dark toggle), never in a hot path, so a
+    // brief block is fine - but it must not hang the UI thread if some
+    // portal implementation misbehaves.
+    const QDBusMessage reply = QDBusConnection::sessionBus().call(msg, QDBus::Block, 200);
+    if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty())
+        return fallback;
+
+    // Read()'s "v" out-argument wraps the setting's value in a QDBusVariant,
+    // but the value itself is stored server-side as a variant too (that's
+    // what ReadAll's a{sv} exposes), so struct-typed settings like this one
+    // come back double-wrapped: v(v((ddd))). Unwrap QDBusVariant layers in a
+    // loop rather than assuming a fixed depth, since the nesting depth isn't
+    // guaranteed to be the same across every portal backend/version.
+    QVariant v = reply.arguments().constFirst();
+    for (int guard = 0; guard < 4 && v.canConvert<QDBusVariant>(); ++guard)
+        v = v.value<QDBusVariant>().variant();
+    if (!v.canConvert<QDBusArgument>())
+        return fallback;
+
+    double r = 0.0, g = 0.0, b = 0.0;
+    // Must be const: QDBusArgument's beginStructure()/operator>>/endStructure
+    // each have a const (read) overload and a non-const (write) overload. A
+    // non-const local here would silently pick the write overload on an
+    // argument that's actually in demarshalling mode, which aborts the
+    // process rather than failing gracefully.
+    const QDBusArgument arg = v.value<QDBusArgument>();
+    arg.beginStructure();
+    arg >> r >> g >> b;
+    arg.endStructure();
+
+    // Spec: components outside [0, 1] mean "no accent colour set" - keep
+    // the built-in default rather than clamping into something arbitrary.
+    if (r < 0.0 || r > 1.0 || g < 0.0 || g > 1.0 || b < 0.0 || b > 1.0)
+        return fallback;
+    return QColor(qRound(r * 255.0), qRound(g * 255.0), qRound(b * 255.0));
+}
+#endif
+
+// Accent colour for the given theme, read from the Windows registry, on
+// macOS from NSColor.controlAccentColor, or on Linux from the freedesktop
+// desktop-portal Settings interface; returns a sensible built-in default if
+// the platform's accent colour can't be read.
 inline QColor ovSystemAccentShade(bool darkMode)
 {
     const QColor fallback = darkMode ? QColor(0x4C, 0xC2, 0xFF)
@@ -133,9 +270,11 @@ inline QColor ovSystemAccentShade(bool darkMode)
         return fallback;
     const int off = darkMode ? 4 : 16;
     return QColor(palette[off], palette[off + 1], palette[off + 2]);
+#elif defined(Q_OS_MAC)
+    return macOsSystemAccentColor(fallback);
+#elif defined(Q_OS_LINUX)
+    return linuxSystemAccentColor(fallback);
 #else
-    // No system accent-colour API wired up for macOS yet; use the built-in
-    // default for both themes.
     return fallback;
 #endif
 }
@@ -346,23 +485,46 @@ public:
 };
 
 // The accent-coloured underline shown beneath a focused text input.
+// Self-syncing: this bar has no layout of its own, so it installs an event
+// filter on its parent input and re-derives its own geometry from
+// QEvent::Resize whenever the parent's size changes while the bar is
+// visible. That keeps ANY input this is attached to correct automatically -
+// whatever resizes the input (a responsive layout, a future feature, manual
+// code) and whenever it happens (including while the input is focused and
+// the bar already showing) - rather than requiring every call site that can
+// resize an input to remember to re-sync the bar by hand.
 class InputAccentBar : public QWidget
 {
     Q_OBJECT
 public:
-    using QWidget::QWidget;
+    explicit InputAccentBar(QWidget* parent = nullptr) : QWidget(parent)
+    {
+        if (parent) parent->installEventFilter(this);
+    }
 
+    // wrapWidth/wrapHeight/thickness describe the input this bar sits under;
+    // radius/color are purely cosmetic. Called once, when the bar becomes
+    // visible (see MainWindow::updateInputStyle()) - after that,
+    // eventFilter() below keeps geometry in sync on its own as the parent
+    // resizes, so callers don't need to re-invoke this just to reposition it.
     void setBar(int wrapWidth, int wrapHeight, int thickness, qreal radius, const QColor& color)
     {
-        m_wrapWidth  = wrapWidth;
-        m_wrapHeight = wrapHeight;
-        m_thickness  = thickness;
-        m_radius     = radius;
-        m_color      = color;
-        update();
+        m_thickness = thickness;
+        m_radius    = radius;
+        m_color     = color;
+        resizeToParent(wrapWidth, wrapHeight);
     }
 
 protected:
+    bool eventFilter(QObject* obj, QEvent* event) override
+    {
+        if (obj == parent() && event->type() == QEvent::Resize && isVisible()) {
+            if (auto* p = parentWidget())
+                resizeToParent(p->width(), p->height());
+        }
+        return QWidget::eventFilter(obj, event);
+    }
+
     void paintEvent(QPaintEvent*) override
     {
         QPainter p(this);
@@ -374,6 +536,17 @@ protected:
     }
 
 private:
+    // Applies a new parent size to both the painted shape (wrapWidth/
+    // wrapHeight, used by paintEvent()'s rounded rect) and the widget's
+    // actual on-screen geometry.
+    void resizeToParent(int wrapWidth, int wrapHeight)
+    {
+        m_wrapWidth  = wrapWidth;
+        m_wrapHeight = wrapHeight;
+        setGeometry(0, wrapHeight - m_thickness, wrapWidth, m_thickness);
+        update();
+    }
+
     int    m_wrapWidth  = 0;
     int    m_wrapHeight = 0;
     int    m_thickness  = 0;
@@ -400,7 +573,16 @@ private:
     QColor m_color;
 };
 
-// Flat single-colour rectangle, used as the dialog footer background.
+// Flat single-colour rectangle, used as the dialog footer background. It
+// forms the bottom of MicaDialog's rounded card, so its own bottom corners
+// need to be rounded to match #micaCard's top corners (8px, see MicaDialog).
+//
+// On Windows this doesn't actually matter: DwmSetWindowAttribute's
+// DWMWA_WINDOW_CORNER_PREFERENCE (see MicaDialog::applyChrome()) rounds the
+// whole native window at the compositor level regardless of what gets
+// painted here. Linux has no such call — nothing else rounds the dialog's
+// bottom edge — so this widget has to paint its own rounded corners there,
+// or the dialog reads as rounded on top and square on the bottom.
 class FooterWidget : public QWidget
 {
 public:
@@ -410,7 +592,25 @@ protected:
     void paintEvent(QPaintEvent*) override
     {
         QPainter p(this);
+#ifdef Q_OS_LINUX
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        p.setBrush(m_color);
+        QPainterPath path;
+        const qreal radius = 8.0;
+        path.moveTo(0, 0);
+        path.lineTo(rect().width(), 0);
+        path.lineTo(rect().width(), rect().height() - radius);
+        path.arcTo(rect().width() - 2 * radius, rect().height() - 2 * radius,
+                   2 * radius, 2 * radius, 0.0, -90.0);
+        path.lineTo(radius, rect().height());
+        path.arcTo(0, rect().height() - 2 * radius, 2 * radius, 2 * radius,
+                   -90.0, -90.0);
+        path.closeSubpath();
+        p.drawPath(path);
+#else
         p.fillRect(rect(), m_color);
+#endif
     }
 private:
     QColor m_color;
@@ -567,6 +767,119 @@ inline QString captionLabelFromSystem(HWND hwnd, UINT sc, const QString& fallbac
 //  Custom title bar
 // ==========================================================================
 
+#ifdef Q_OS_LINUX
+// Frameless-window resize border: how close to the *visible* window edge (in
+// device-independent pixels) a press/hover counts as "grab this edge",
+// mirroring the invisible resize margin a native Win32/X11 decorated window
+// frame normally provides for free. Checked via ovEdgesAt() below in
+// MainWindow's qApp-wide event filter, which is the only place this happens.
+// On Linux this same value is also what MainWindow::updateLinuxInputShape()
+// carves a click-through-proof ring out of the shadow gutter for, via
+// ovResizeBandInset() below, so mouse events for edge-dragging actually
+// reach the window in the first place - see that function's comment.
+static constexpr int kResizeMargin = 6;
+
+// Radius (device-independent pixels) of the frameless window's rounded
+// corners when restored (see MainWindow::paintEvent()). CaptionButton uses
+// this too, to keep its hover/press fill from squaring off past the curve
+// where the close button sits flush in the top-right corner.
+static constexpr qreal kWindowCornerRadius = 8.0;
+
+// Whether the window's top-right corner currently has nowhere for a curve to
+// sit against: either the window is maximized, or (mirroring
+// MainWindow::currentGutter(), which squares off the card's own corners for
+// the same reason) a tiling/snap window manager has docked it flush against
+// the top and/or right edge of the current screen's usable area without
+// ever setting a maximized state for it. CaptionButton uses this to decide
+// whether its close-button hover/press fill should round that same corner -
+// checking isMaximized() alone left the button's fill rounded even once the
+// window silhouette itself had already squared off that corner from a snap.
+// kCornerSnapTolerance mirrors currentGutter()'s own tolerance for the same
+// off-by-one reason (a WM's tiling math can be a pixel or two off).
+static constexpr int kCornerSnapTolerance = 2;
+
+inline bool topRightCornerIsSquare(const QWidget* topLevel)
+{
+    if (!topLevel) return true;
+    if (topLevel->isMaximized()) return true;
+    if (const QScreen* scr = topLevel->screen()) {
+        const QRect avail = scr->availableGeometry();
+        const QRect win   = topLevel->geometry();
+        if (qAbs(win.top()   - avail.top())   <= kCornerSnapTolerance) return true;
+        if (qAbs(win.right() - avail.right()) <= kCornerSnapTolerance) return true;
+    }
+    return false;
+}
+
+// Width (device-independent pixels) of the transparent gutter MainWindow
+// reserves around its own visible "card" so a soft drop shadow has
+// somewhere to be painted (see paintCardShadow()/MainWindow::paintEvent()
+// in MainWindow.cpp, and the layout margin set up in setupUi()). Windows
+// and macOS get a real compositor-drawn shadow for free (DWM's extend-frame
+// trick / the native NSWindow shadow); on Linux there's no single mechanism
+// every current desktop reliably provides that instead. GNOME's Mutter
+// never draws one for an undecorated window at all - the application is
+// expected to draw its own, same as GTK's own client-side-decorated windows
+// do - and KWin's compositor-side shadow protocol either needs a direct
+// KWayland dependency or, on plain X11, only applies itself automatically
+// as of Plasma 6.8. Painting it by hand instead is the one approach that
+// looks and behaves the same on every current distro/DE/session type with
+// no per-desktop detection code at all. Collapses to 0 while maximized,
+// same trigger as kWindowCornerRadius, since there's no screen space for a
+// shadow there anyway.
+static constexpr int kShadowMargin = 24;
+
+// How far in (device-independent pixels) from the window's own physical
+// edge the kResizeMargin-wide resize-grab band starts, per side - shared by
+// ovEdgesAt() and MainWindow::updateLinuxInputShape() so the pixels that are
+// actually clickable (the X Shape input region) and the pixels ovEdgesAt()
+// treats as a grab can never drift apart from each other.
+//
+// The band straddles the *visible* border (the card edge, "gutter" in from
+// the window's own outer edge - see MainWindow::currentGutter()), not the
+// window's raw physical edge: half of it sits over the card, half out in
+// the gutter, so grabbing to resize lines up with where the border is
+// actually drawn rather than somewhere out in the middle of an otherwise
+// invisible shadow, 18px past anything the eye can see. Where an edge has
+// no gutter to speak of (flush against a screen edge, or maximized - gutter
+// 0 there), the card edge already coincides with the window's own edge, and
+// the band can't extend past that into thin air - it's clamped to 0 and
+// just sits fully inside instead, exactly like before any of this
+// shadow/gutter machinery existed.
+inline QMargins ovResizeBandInset(const QMargins& gutter)
+{
+    const int half = kResizeMargin / 2;
+    return QMargins(qMax(0, gutter.left()   - half), qMax(0, gutter.top()    - half),
+                     qMax(0, gutter.right()  - half), qMax(0, gutter.bottom() - half));
+}
+
+inline Qt::Edges ovEdgesAt(const QPoint& pos, const QSize& size, const QMargins& gutter)
+{
+    const QMargins in = ovResizeBandInset(gutter);
+    Qt::Edges edges;
+    if (pos.x() >= in.left() && pos.x() < in.left() + kResizeMargin)
+        edges |= Qt::LeftEdge;
+    else if (pos.x() >= size.width() - in.right() - kResizeMargin && pos.x() < size.width() - in.right())
+        edges |= Qt::RightEdge;
+    if (pos.y() >= in.top() && pos.y() < in.top() + kResizeMargin)
+        edges |= Qt::TopEdge;
+    else if (pos.y() >= size.height() - in.bottom() - kResizeMargin && pos.y() < size.height() - in.bottom())
+        edges |= Qt::BottomEdge;
+    return edges;
+}
+
+inline Qt::CursorShape ovCursorForEdges(Qt::Edges edges)
+{
+    const bool l = edges & Qt::LeftEdge, r = edges & Qt::RightEdge;
+    const bool t = edges & Qt::TopEdge,  b = edges & Qt::BottomEdge;
+    if ((t && l) || (b && r)) return Qt::SizeFDiagCursor;
+    if ((t && r) || (b && l)) return Qt::SizeBDiagCursor;
+    if (l || r)               return Qt::SizeHorCursor;
+    if (t || b)                return Qt::SizeVerCursor;
+    return Qt::ArrowCursor;
+}
+#endif
+
 // Which system caption button a CaptionButton represents.
 enum class CaptionButtonKind { Minimize, Maximize, Close };
 
@@ -593,7 +906,15 @@ public:
     void setTip(UINT sc, const QString& fallback) { m_tipSC = sc; m_tipFallback = fallback; }
 
     void setDark(bool dark) { m_dark = dark; update(); }
-    void setMaximized(bool maximized) { m_maximized = maximized; update(); }
+    void setMaximized(bool maximized)
+    {
+        m_maximized = maximized;
+        update();
+        if (m_kind == CaptionButtonKind::Maximize && m_tipSC != 0) {
+            m_tipSC = maximized ? SC_RESTORE : SC_MAXIMIZE;
+            m_tipFallback = maximized ? QStringLiteral("Restore") : QStringLiteral("Maximize");
+        }
+    }
 
     void setHovered(bool h)
     {
@@ -626,8 +947,34 @@ protected:
             else if (m_hovered)
                 bg = m_dark ? QColor(255, 255, 255, 15) : QColor(0, 0, 0, 9);
         }
-        if (bg.alpha() > 0)
+        if (bg.alpha() > 0) {
+#ifdef Q_OS_LINUX
+            // The close button sits flush in the window's top-right corner
+            // (see TitleBarWidget layout). That corner is rounded (unless
+            // maximized — square then, so no rounding needed there either);
+            // a plain fillRect would draw past the curve, showing a square
+            // tip poking out of the rounded silhouette. Round just that one
+            // corner to match; the other three corners of this button are
+            // interior to the title bar and stay square.
+            const QWidget* topWin = window();
+            if (m_kind == CaptionButtonKind::Close && !topRightCornerIsSquare(topWin)) {
+                const QRectF r = rect();
+                const qreal rad = qMin(kWindowCornerRadius, qMin(r.width(), r.height()) / 2.0);
+                QPainterPath path;
+                path.moveTo(r.left(), r.top());
+                path.lineTo(r.right() - rad, r.top());
+                path.arcTo(r.right() - 2 * rad, r.top(), 2 * rad, 2 * rad, 90.0, -90.0);
+                path.lineTo(r.right(), r.bottom());
+                path.lineTo(r.left(), r.bottom());
+                path.closeSubpath();
+                p.fillPath(path, bg);
+            } else {
+                p.fillRect(rect(), bg);
+            }
+#else
             p.fillRect(rect(), bg);
+#endif
+        }
 
         QColor iconColor;
         if (m_kind == CaptionButtonKind::Close && m_hovered) {
@@ -638,14 +985,51 @@ protected:
             iconColor = m_dark ? QColor(255, 255, 255, a) : QColor(0, 0, 0, a);
         }
 
+#ifdef Q_OS_WIN
         QFont f(QStringLiteral("Segoe Fluent Icons"));
         f.setPixelSize(10);
         f.setHintingPreference(QFont::PreferFullHinting);
         p.setFont(f);
         p.setPen(iconColor);
         p.drawText(rect(), Qt::AlignCenter, QString(glyphChar()));
+#else
+        // "Segoe Fluent Icons" doesn't exist outside Windows, so the glyph
+        // codepoints above would fall back to a missing-glyph box (or render
+        // blank) on Linux. Draw the three icons as plain vector shapes
+        // instead — same visual language, no font dependency.
+        p.setPen(QPen(iconColor, 1.0));
+        p.setBrush(Qt::NoBrush);
+        const QRectF r = rect();
+        const qreal cx = r.center().x();
+        const qreal cy = r.center().y();
+        const qreal s  = 5.0; // half-size of the glyph
+        switch (m_kind) {
+        case CaptionButtonKind::Minimize:
+            p.drawLine(QPointF(cx - s, cy), QPointF(cx + s, cy));
+            break;
+        case CaptionButtonKind::Maximize:
+            if (m_maximized) {
+                // Restore glyph: two overlapping square outlines.
+                const qreal o = 2.0;
+                QRectF back(cx - s + o, cy - s, s * 2 - o, s * 2 - o);
+                QRectF front(cx - s, cy - s + o, s * 2 - o, s * 2 - o);
+                p.drawRect(back);
+                p.fillRect(front, m_dark ? QColor(0x20, 0x20, 0x20)
+                                          : QColor(0xf3, 0xf3, 0xf3));
+                p.drawRect(front);
+            } else {
+                p.drawRect(QRectF(cx - s, cy - s, s * 2, s * 2));
+            }
+            break;
+        case CaptionButtonKind::Close:
+            p.drawLine(QPointF(cx - s, cy - s), QPointF(cx + s, cy + s));
+            p.drawLine(QPointF(cx - s, cy + s), QPointF(cx + s, cy - s));
+            break;
+        }
+#endif
     }
 
+#ifdef Q_OS_WIN
     QChar glyphChar() const
     {
         switch (m_kind) {
@@ -656,6 +1040,7 @@ protected:
         }
         return QChar(0xE8BB);
     }
+#endif
 
     void enterEvent(QEnterEvent*) override
     {
@@ -761,9 +1146,21 @@ public:
         m_iconLabel = new QLabel(this);
         m_iconLabel->setFixedSize(20, 20);
         m_iconLabel->setAttribute(Qt::WA_TranslucentBackground);
+#ifdef Q_OS_LINUX
+        // On Windows, WM_NCHITTEST classifies this whole area as the caption
+        // region regardless of which child widget the click physically lands
+        // on. Linux has no such hook — a press has to actually reach this
+        // widget's own mousePressEvent()  to start the drag — so labels the
+        // user has no reason to interact with just pass clicks straight
+        // through to it instead of swallowing them.
+        m_iconLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+#endif
 
         m_titleLabel = new QLabel(this);
         m_titleLabel->setAttribute(Qt::WA_TranslucentBackground);
+#ifdef Q_OS_LINUX
+        m_titleLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+#endif
 
         // Subtitle carries transient state (e.g. the live elapsed time) beside
         // the app name, in the WinUI title/subtitle style: no separator, just a
@@ -772,6 +1169,9 @@ public:
         m_subtitleLabel = new QLabel(this);
         m_subtitleLabel->setAttribute(Qt::WA_TranslucentBackground);
         m_subtitleLabel->hide();
+#ifdef Q_OS_LINUX
+        m_subtitleLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+#endif
 
         left->addWidget(m_iconLabel, 0, Qt::AlignVCenter);
         left->addSpacing(20);
@@ -790,6 +1190,13 @@ public:
         m_closeBtn->setFixedSize(btnW, btnH);
 
         m_minBtn->setTip(SC_MINIMIZE, QStringLiteral("Minimize"));
+        // On Windows, hovering this button pops up the native Snap Layouts
+        // flyout, so a tooltip here would be redundant. Linux has no such
+        // affordance and this would otherwise be the only caption button
+        // without one, so give it a plain Maximize/Restore tip there.
+#ifdef Q_OS_LINUX
+        m_maxBtn->setTip(SC_MAXIMIZE, QStringLiteral("Maximize"));
+#endif
         m_closeBtn->setTip(SC_CLOSE,  QStringLiteral("Close"));
 
         layout->addWidget(m_minBtn,   0, Qt::AlignTop);
@@ -862,6 +1269,48 @@ public:
     CaptionButton* minBtn()   const { return m_minBtn;   }
     CaptionButton* maxBtn()   const { return m_maxBtn;   }
     CaptionButton* closeBtn() const { return m_closeBtn; }
+
+#ifdef Q_OS_LINUX
+protected:
+    // Windows gets dragging/snapping/double-click-to-maximize for free from
+    // WM_NCHITTEST classifying this area as HTCAPTION. Linux has no such
+    // hook — there's no native frame at all once Qt::FramelessWindowHint is
+    // set — so a plain click-and-drag here has to explicitly hand off to the
+    // compositor via QWindow::startSystemMove(). That handoff is also what
+    // makes edge-snapping work: the actual move is driven by the window
+    // manager from that point on, the same as if it were dragging any other
+    // window's native title bar, so whatever snap-to-edge/tile behaviour the
+    // desktop normally offers just applies here too.
+    //
+    // No resize hit-testing of its own: kShadowMargin (see MainWindow.h)
+    // keeps a real gutter between the title bar and the window's physical
+    // edges on every side — corners included — so MainWindow's own
+    // qApp-wide edge detection (see MainWindow::eventFilter()) already
+    // covers the whole perimeter uniformly, leaving nothing for this widget
+    // to handle beyond a plain drag.
+    void mousePressEvent(QMouseEvent* e) override
+    {
+        if (e->button() == Qt::LeftButton) {
+            if (QWidget* w = window()) {
+                if (QWindow* wh = w->windowHandle())
+                    wh->startSystemMove();
+            }
+        }
+        QWidget::mousePressEvent(e);
+    }
+
+    void mouseDoubleClickEvent(QMouseEvent* e) override
+    {
+        if (e->button() == Qt::LeftButton) {
+            if (QWidget* w = window()) {
+                if (w->isMaximized()) w->showNormal();
+                else                  w->showMaximized();
+            }
+        }
+        QWidget::mouseDoubleClickEvent(e);
+    }
+
+#endif
 
 private:
     QLabel*        m_iconLabel     = nullptr;
@@ -991,13 +1440,13 @@ public:
             QColor penCol = dark ? QColor(0xff, 0xff, 0xff) : QColor(0, 0, 0, 227);
             // Error rows (hop answered with an ICMP status instead of an
             // address) span Hostname+IP and use the same muted shade as a
-            // zero in the Loss column plus the header's 13 px size, so they
-            // read as status, not data. (Fluent's type ramp puts secondary /
-            // status text one step below Body for exactly this purpose.)
+            // zero in the Loss column plus the header's 12 px Caption size,
+            // so they read as status, not data. (Fluent's type ramp puts
+            // Caption one step below Body for exactly this purpose.)
             if (index.column() == ColHostname && index.data(Qt::UserRole).toBool()) {
                 penCol = dark ? QColor(0x6e, 0x6e, 0x6e) : QColor(0x9e, 0x9e, 0x9e);
                 QFont f = option.font;
-                f.setPixelSize(13);
+                f.setPixelSize(12);
                 painter->setFont(f);
             }
             if (index.column() == ColSent || index.column() == ColRecv) {
@@ -1020,17 +1469,41 @@ public:
             // tooltip. Drawn by the delegate, so exports stay clean.
             if ((index.column() == ColHostname || index.column() == ColIp)
                 && index.data(Qt::UserRole + 1).toBool()) {
-                QFont iconFont(QStringLiteral("Segoe Fluent Icons"));
-                iconFont.setPixelSize(11);
                 const QRect iconRect(textRect.right() - 11, textRect.top(),
                                      12, textRect.height());
+                const QColor iconColor = dark ? QColor(255, 255, 255, 197)
+                                               : QColor(0, 0, 0, 158);
                 painter->save();
+#ifdef Q_OS_WIN
+                QFont iconFont(QStringLiteral("Segoe Fluent Icons"));
+                iconFont.setPixelSize(11);
                 painter->setFont(iconFont);
-                painter->setPen(dark ? QColor(255, 255, 255, 197)
-                                     : QColor(0, 0, 0, 158));
+                painter->setPen(iconColor);
                 painter->drawText(iconRect, Qt::AlignCenter, QString(QChar(0xE8B1)));
+#else
+                // "Segoe Fluent Icons" doesn't exist outside Windows, and
+                // the Unicode shuffle emoji (U+1F500) renders in full
+                // color regardless of the U+FE0E text-style variation
+                // selector — Qt's text shaping doesn't reliably honor VS15
+                // against a color emoji font on Linux. U+292E (Supplemental
+                // Arrows-B) is a plain arrow symbol, not an emoji-
+                // presentation character and within the BMP (no surrogate
+                // pair needed like U+1F500), so it renders through the
+                // normal text font — monochrome, no font/variation-
+                // selector issues.
+                QFont f = option.font;
+                f.setPixelSize(11);
+                painter->setFont(f);
+                painter->setPen(iconColor);
+                painter->drawText(iconRect, Qt::AlignCenter, QString(QChar(0x292E)));
+#endif
                 painter->restore();
-                textRect.adjust(0, 0, -18, 0);
+                // Symmetric inset (not just off the right edge) so the
+                // centred address keeps the same midpoint as every other
+                // row — the reserved 18px on the left is unused space, not
+                // text, which is what keeps the elision width safely clear
+                // of the icon while the visual centre stays put.
+                textRect.adjust(18, 0, -18, 0);
             }
             const QString elided = option.fontMetrics.elidedText(text, Qt::ElideRight, textRect.width());
             painter->drawText(textRect, align, elided);
@@ -1076,6 +1549,10 @@ protected:
     }
 
 private:
+#ifdef Q_OS_WIN
+    // Windows: use the real system checkmark glyph from Segoe Fluent Icons
+    // (same font/codepoint the OS's own checkboxes draw), so it matches
+    // native Windows 11 controls pixel-for-pixel instead of an approximation.
     static void drawTick(QPainter& p, const QRect& box, const QColor& color)
     {
         QFont f(QStringLiteral("Segoe Fluent Icons"));
@@ -1085,6 +1562,68 @@ private:
         p.setPen(color);
         p.drawText(box, Qt::AlignCenter, QString(QChar(0xE73E)));
     }
+#elif defined(Q_OS_LINUX)
+    // Same glyph shape as the shared fallback below, but centering it
+    // exposed that the checkmark's own ink isn't symmetric inside the
+    // square it's drawn in (it sits left-and-up of that square's centre),
+    // so centering the square left the visible tick looking off-centre.
+    // Centre on the stroked path's actual bounding box instead, and draw
+    // it a touch smaller.
+    static void drawTick(QPainter& p, const QRect& box, const QColor& color)
+    {
+        const qreal side = box.height() * 0.56;
+        QRectF r(0, 0, side, side);
+
+        QPainterPath path;
+        path.moveTo(r.left(),               r.top() + side * 0.55);
+        path.lineTo(r.left() + side * 0.40,  r.top() + side * 0.92);
+        path.lineTo(r.right(),              r.top() + side * 0.12);
+
+        const qreal penWidth = qMax(1.6, side * 0.16);
+        QPen pen(color, penWidth);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+
+        QPainterPathStroker stroker;
+        stroker.setWidth(penWidth);
+        stroker.setCapStyle(pen.capStyle());
+        stroker.setJoinStyle(pen.joinStyle());
+        const QRectF inkRect = stroker.createStroke(path).boundingRect();
+        // QRect::center() is not the true geometric centre: for a 20-wide
+        // integer rect it returns x + 9 (from (left()+right())/2 with
+        // right() = left+width-1), not x + 10.0. That's exactly the
+        // ~1px diagonal offset that made the tick look off-centre —
+        // QRectF(box).center() uses the real edge (x + width) instead.
+        path.translate(QRectF(box).center() - inkRect.center());
+
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(path);
+    }
+#else
+    // Non-Windows, non-Linux (macOS): "Segoe Fluent Icons" doesn't exist
+    // here, so the glyph codepoint above would fall back to a missing-glyph
+    // box. Draw the same checkmark shape as a plain vector path instead —
+    // identical look, no font dependency.
+    static void drawTick(QPainter& p, const QRect& box, const QColor& color)
+    {
+        const qreal side = box.height() * 0.62;
+        QRectF r(0, 0, side, side);
+        r.moveCenter(QPointF(box.center()));
+
+        QPainterPath path;
+        path.moveTo(r.left(),               r.top() + side * 0.55);
+        path.lineTo(r.left() + side * 0.40,  r.top() + side * 0.92);
+        path.lineTo(r.right(),              r.top() + side * 0.12);
+
+        QPen pen(color, qMax(1.6, side * 0.16));
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(path);
+    }
+#endif
 
     bool m_dark = true;
 };
@@ -1139,22 +1678,29 @@ protected:
         if (!hasContent) { painter->restore(); return; }
 
         QFont nameFont = font();
-        nameFont.setPixelSize(13);
+        nameFont.setPixelSize(12);
         nameFont.setWeight(QFont::DemiBold);
 
         QFont pillFont = nameFont;
-        pillFont.setPixelSize(10);
+        pillFont.setPixelSize(12);
 
         const QFontMetrics fmName(nameFont);
         const QFontMetrics fmPill(pillFont);
 
         const bool hasPill   = !col.unit.isEmpty();
         const int  nameW     = fmName.horizontalAdvance(col.name);
-        const int  gap       = 5;
-        const int  pillPadX  = 5;
+        const int  gap       = 4;
+        const int  pillPadX  = 4;
         const int  pillTextW = hasPill ? fmPill.horizontalAdvance(col.unit) : 0;
         const int  pillW     = hasPill ? pillTextW + 2 * pillPadX : 0;
-        const int  pillH     = hasPill ? fmPill.height() + 1 : 0;
+        // ascent() + descent() + 4px padding, not the font's full height()
+        // (which adds extra line-spacing "leading" unrelated to glyph
+        // extent — that's what made the badge look top-heavy for text
+        // like "ms" with no tall ascenders). Using ascent()/descent()
+        // rather than capHeight() keeps headroom for accented capitals
+        // whose diacritic rises above the cap-height line (Š, Ž, Č, Ř) and
+        // for ordinary descenders (j, g, p, y).
+        const int  pillH     = hasPill ? (fmPill.ascent() + fmPill.descent() + 4) : 0;
         const int  groupW    = hasPill ? nameW + gap + pillW : nameW;
 
         const int  cx = rect.center().x();
@@ -1170,17 +1716,24 @@ protected:
 
         if (hasPill) {
             const qreal px = x + nameW + gap;
-            const QRectF pillRect(px, cy - pillH / 2.0 - 1.0, pillW, pillH);
+            const QRectF pillRect(px, cy - pillH / 2.0 + 2.0, pillW, pillH);
 
             painter->setRenderHint(QPainter::Antialiasing, true);
             painter->setPen(Qt::NoPen);
             painter->setBrush(pillBg);
-            painter->drawRoundedRect(pillRect, 3.0, 3.0);
+            // Fluent Shapes spec: shapes under 32px use a 2px corner radius
+            // (default is 4px for larger rectangles).
+            painter->drawRoundedRect(pillRect, 2.0, 2.0);
 
             painter->setRenderHint(QPainter::Antialiasing, false);
             painter->setFont(pillFont);
             painter->setPen(pillTxt);
-            painter->drawText(pillRect, Qt::AlignCenter, col.unit);
+            // Draw into the rounded/int QRect (not the QRectF used for the
+            // background) so this goes through the same integer-based
+            // centering path as the name text above — mixing int and float
+            // rects here caused a 1px vertical mismatch between the two at
+            // some scale factors (e.g. 200%).
+            painter->drawText(pillRect.toRect().translated(0, -1), Qt::AlignCenter, col.unit);
         }
 
         painter->restore();
@@ -1598,13 +2151,29 @@ private slots:
     void onElapsedTimer();
     void onWarmupEnd();
     void onToggleTheme();
+#ifdef Q_OS_LINUX
+    // Fires on org.freedesktop.portal.Settings' SettingChanged signal for
+    // any namespace/key (color-scheme, accent-color, ...) - see
+    // the connect() call in the constructor. The parameter names/types must
+    // match the DBus signal signature exactly (old-style SLOT() connect).
+    void onPortalSettingChanged(const QString& ns, const QString& key, const QDBusVariant& value);
+#endif
 
 private:
     // Setup, theming, focus handling, native Win32 chrome, ASN lookup, export.
     void    setupUi();
+    void    showEvent(QShowEvent* event) override;
     void    resizeEvent(QResizeEvent* event) override;
     void    changeEvent(QEvent* event) override;
     void    mousePressEvent(QMouseEvent* event) override;
+#ifdef Q_OS_LINUX
+    void    paintEvent(QPaintEvent* event) override;
+    void    moveEvent(QMoveEvent* event) override;
+    void    updateTableCorners();
+    void    updateLinuxInputShape();
+    void    syncLinuxGutter();
+    QMargins currentGutter() const;
+#endif
     bool    eventFilter(QObject* obj, QEvent* event) override;
     bool    nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
     void    showIconTooltip(QPushButton* btn, const QString& text);
@@ -1618,6 +2187,7 @@ private:
     void    applyWin11Chrome(bool dark);
     void    applyFramelessStyle();
     void    updateInputStyle(QWidget* input, InputAccentBar* accent, bool active, bool keyboardFocused);
+    void    updateInputAccentGeometry(QWidget* input, InputAccentBar* accent);
     void    applyInputIdleStyle(QWidget* input);
     void    setTracingInputsEnabled(bool enabled);
     void    updateTable();
@@ -1629,9 +2199,31 @@ private:
     QString        getCachedASN(const QString& ip, bool ipv6) const;
     void           checkForUpdates();
     static bool    isNewerVersion(const QString& latest, const QString& current);
+    void           updateToolbarResponsiveLayout();
+    bool           alignTargetEditToLossBar();
+    void           scheduleButtonAlignment(int attemptsLeft = 30);
 
     // Title bar, toolbar inputs, action buttons and icon-tooltip state.
     TitleBarWidget* m_titleBar     = nullptr;
+#ifdef Q_OS_LINUX
+    // Whether eventFilter()'s window-wide edge detection currently has an
+    // application override cursor pushed (see setupUi()'s qApp-wide filter
+    // install and eventFilter()'s edge-detection branch).
+    bool            m_edgeCursorActive = false;
+    // centralWidget()'s own layout, kept around so changeEvent() can collapse
+    // its shadow-gutter margins (see kShadowMargin) to 0 while maximized.
+    QVBoxLayout*    m_mainLayout = nullptr;
+#endif
+    // Default/floor width for m_targetEdit - see updateToolbarResponsiveLayout().
+    static constexpr int kTargetEditDefaultWidth = 395;
+    static constexpr int kTargetEditMinWidth     = 150;
+    // The width to grow back to (and shrink from) when there's room - starts
+    // at kTargetEditDefaultWidth but is refined by alignTargetEditToLossBar(),
+    // which measures the real, font/DPI-corrected width and may run more than
+    // once (native styles on some platforms can still be adjusting control
+    // metrics - checkbox/spin-box indicators etc. - a tick after the first
+    // layout pass); see updateToolbarResponsiveLayout().
+    int             m_targetEditIdealWidth = kTargetEditDefaultWidth;
     QWidget*        m_toolbar      = nullptr;
     QLineEdit*      m_targetEdit   = nullptr;
     std::function<void()> m_targetClearUpdate;
@@ -1703,6 +2295,42 @@ private:
 //  Modal "Mica" dialog
 // ==========================================================================
 
+#ifdef Q_OS_LINUX
+// The dimmed backdrop shown behind MicaDialog on Linux. Paints its own
+// antialiased rounded-rect fill rather than relying on QWidget::setMask():
+// a mask is a binary, non-antialiased QRegion, so the polygon approximation
+// QPainterPath::toFillPolygon() produces for the arc never quite lines up
+// with the antialiased corner MainWindow::paintEvent() draws underneath —
+// each corner ends up with a slightly different ring of mismatched pixels.
+// Painting the fill ourselves with Antialiasing on keeps this widget's edge
+// blending consistent with the window's, corner to corner.
+class SmokeOverlay : public QWidget
+{
+public:
+    explicit SmokeOverlay(QWidget* host)
+        : QWidget(host), m_host(host)
+    {
+        setObjectName("micaSmoke");
+        setAttribute(Qt::WA_TranslucentBackground, true);
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0, 0, 0, 77)); // rgba(0,0,0,0.30)
+        const qreal radius = (m_host && m_host->isMaximized()) ? 0.0 : kWindowCornerRadius;
+        p.drawRoundedRect(rect(), radius, radius);
+    }
+
+private:
+    QPointer<QWidget> m_host;
+};
+#endif
+
 // Modal dialog used for the About box and error messages, styled like Windows
 // 11: rounded card, optional accent links, themed close button, a dimmed
 // backdrop behind it and a keyboard focus ring on the focusable controls.
@@ -1722,13 +2350,28 @@ public:
         QPointer<QWidget> smoke;
         if (parent) {
             QWidget* host = parent->window();
+#ifdef Q_OS_LINUX
+            smoke = new SmokeOverlay(host);
+#else
             smoke = new QWidget(host);
             smoke->setObjectName("micaSmoke");
             smoke->setAttribute(Qt::WA_StyledBackground, true);
             smoke->setAttribute(Qt::WA_TransparentForMouseEvents, true);
             smoke->setStyleSheet("background-color: rgba(0,0,0,0.30);");
-            smoke->setGeometry(host->rect());
+#endif
             smoke->raise();
+#ifdef Q_OS_LINUX
+            // host->rect() is the *whole* window on Linux now, gutter
+            // included (see kShadowMargin) - dimming that too would paint
+            // straight over MainWindow's own shadow and flatten it under a
+            // translucent block. Inset by the same amount MainWindow's own
+            // paintEvent() does, so the backdrop covers exactly the visible
+            // card and leaves the shadow around it alone.
+            const int m = host->isMaximized() ? 0 : kShadowMargin;
+            smoke->setGeometry(host->rect().adjusted(m, m, -m, -m));
+#else
+            smoke->setGeometry(host->rect());
+#endif
             smoke->show();
         }
 

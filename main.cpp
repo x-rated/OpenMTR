@@ -25,13 +25,106 @@
 #include <QtWidgets/QApplication>
 #include <QtPlugin>
 
+#ifdef Q_OS_LINUX
+#include <QtCore/QDir>
+#include <QtCore/QFile>
+#include <QtCore/QFileDevice>
+#include <QtCore/QStandardPaths>
+#include <QtCore/QString>
+#include <QtCore/QByteArray>
+#endif
+
 // Static Qt plugins linked into the executable — Windows only, since that's
 // the only platform built as a fully static Qt binary. macOS links Qt
 // dynamically and bundles the Cocoa platform plugin via macdeployqt instead
 // (see .github/workflows/build.yml).
 #ifdef _WIN32
 Q_IMPORT_PLUGIN(QWindowsIntegrationPlugin)
-Q_IMPORT_PLUGIN(QICOPlugin)
+#endif
+
+#ifdef Q_OS_LINUX
+// ==========================================================================
+//  AppImage desktop-entry self-integration (Linux only)
+// ==========================================================================
+//
+// GNOME Shell — under Wayland in particular, but Mutter/X11 too — never
+// reads window icons directly (there's no Wayland equivalent of X11's
+// _NET_WM_ICON, which is what MainWindow::updateAppIcon()'s setWindowIcon()
+// call would otherwise rely on). It only ever resolves a taskbar/dock icon
+// by matching the window's app_id (== our setDesktopFileName() below) or
+// WM_CLASS against an *installed* .desktop file somewhere on
+// XDG_DATA_DIRS. A bare, un-integrated AppImage has no such file anywhere
+// on the system, so the shell falls back to a generic gear icon — this is
+// true of every AppImage, not an OpenMTR-specific bug, which is why tools
+// like AppImageLauncher exist to register one on first run.
+//
+// This does that registration itself, without requiring a separate tool or
+// root: it writes a desktop entry + icon into the user's own XDG data dir
+// (~/.local/share), with Exec pointing at wherever this particular
+// AppImage file currently lives. Safe to call on every launch — it only
+// touches disk when the content actually needs to change (a new AppImage
+// version or a different path), so a normal launch is a couple of cheap
+// existence/content checks.
+static void integrateAppImageDesktopEntry()
+{
+    // Set by the AppImage runtime itself to the path of the running
+    // .AppImage file; absent for a plain (non-AppImage) Linux build, in
+    // which case there's nothing to self-integrate.
+    const QString appImagePath = qEnvironmentVariable("APPIMAGE");
+    if (appImagePath.isEmpty())
+        return;
+
+    const QString dataHome = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    if (dataHome.isEmpty())
+        return;
+
+    const QString desktopDir = dataHome + QStringLiteral("/applications");
+    const QString iconDir    = dataHome + QStringLiteral("/icons/hicolor/256x256/apps");
+    QDir().mkpath(desktopDir);
+    QDir().mkpath(iconDir);
+
+    // Exec's argument is quoted since the AppImage's path may contain
+    // spaces (e.g. sitting in "Downloads" under a non-English locale, or
+    // just a folder name with spaces); %u is the standard desktop-entry
+    // placeholder for a single optional URL/file argument.
+    const QString desktopContents =
+        QStringLiteral(
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            "Name=OpenMTR\n"
+            "Comment=Combined traceroute and ping network diagnostic tool\n"
+            "Exec=\"%1\" %u\n"
+            "Icon=openmtr\n"
+            "Categories=Network;Utility;\n"
+            "StartupWMClass=OpenMTR\n"
+            "Terminal=false\n")
+            .arg(appImagePath);
+
+    const QString desktopPath = desktopDir + QStringLiteral("/openmtr.desktop");
+    QFile existingDesktop(desktopPath);
+    bool desktopNeedsWrite = true;
+    if (existingDesktop.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        desktopNeedsWrite = QString::fromUtf8(existingDesktop.readAll()) != desktopContents;
+        existingDesktop.close();
+    }
+    if (desktopNeedsWrite) {
+        QFile out(desktopPath);
+        if (out.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+            out.write(desktopContents.toUtf8());
+            out.close();
+            // Desktop entries must be executable to be trusted/launched by
+            // some file managers' "Allow Launching" prompt.
+            QFile::setPermissions(desktopPath,
+                out.permissions() | QFileDevice::ExeOwner | QFileDevice::ExeGroup | QFileDevice::ExeOther);
+        }
+    }
+
+    // The icon itself never changes between versions, so it's only written
+    // once rather than compared byte-for-byte on every launch.
+    const QString iconPath = iconDir + QStringLiteral("/openmtr.png");
+    if (!QFile::exists(iconPath))
+        QFile::copy(QStringLiteral(":/openmtr.png"), iconPath);
+}
 #endif
 
 // ==========================================================================
@@ -48,6 +141,20 @@ int main(int argc, char* argv[])
     WSAStartup(MAKEWORD(2, 2), &wsaData);
 #endif
 
+#ifdef Q_OS_LINUX
+    // Many Linux desktops set QT_QPA_PLATFORMTHEME=gtk3, which pulls the
+    // system GTK theme's palette and style hints (e.g. "dialog buttons show
+    // icons instead of text") into every Qt widget — not just genuinely
+    // native dialogs, but Qt's own non-native ones too (like the Export
+    // dialog, see MainWindow::onExport()). On a desktop with a missing or
+    // broken GTK icon theme this shows up as unreadable black panels and
+    // icon-only buttons. The app already forces its own Fusion style and
+    // does its own light/dark theming, so it doesn't need this platform
+    // theme integration; disabling it keeps the look consistent regardless
+    // of whatever GTK theme (if any) happens to be installed.
+    qputenv("QT_QPA_PLATFORMTHEME", QByteArray());
+#endif
+
     // At fractional Windows display scaling (125%, 150%, 175%...) Qt's
     // default "PassThrough" DPI policy positions widgets at fractional
     // physical-pixel coordinates, which blurs every 1px border in the app
@@ -62,6 +169,20 @@ int main(int argc, char* argv[])
     app.setApplicationName("OpenMTR");
     app.setApplicationVersion(OPENMTR_VERSION);
     app.setStyle("Fusion");
+
+#ifdef Q_OS_LINUX
+    // Ties this running process to openmtr.desktop (installed as
+    // .../applications/openmtr.desktop — see CMakeLists.txt). Without it,
+    // several window managers — GNOME Shell under Wayland in particular —
+    // can't match the window back to its desktop entry and fall back to a
+    // generic taskbar icon instead of the one MainWindow sets
+    // (see MainWindow::updateAppIcon()).
+    app.setDesktopFileName(QStringLiteral("openmtr"));
+
+    // No-op for a plain Linux install (see function comment) — only does
+    // anything when actually running as an AppImage.
+    integrateAppImageDesktopEntry();
+#endif
 
     MainWindow w;
     w.show();

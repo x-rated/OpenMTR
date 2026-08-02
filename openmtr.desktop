@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=OpenMTR
+Comment=Combined traceroute and ping network diagnostic tool
+Exec=OpenMTR
+Icon=openmtr
+Categories=Network;Utility;
+StartupWMClass=OpenMTR
+Terminal=false

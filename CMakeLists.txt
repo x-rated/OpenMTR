@@ -1,12 +1,15 @@
 # ============================================================================
-#  CMakeLists.txt — build definition for OpenMTR (Windows static / macOS bundle)
+#  CMakeLists.txt - build definition for OpenMTR
+#  (Windows static / macOS bundle / Linux AppImage)
 # ============================================================================
 
 cmake_minimum_required(VERSION 3.22)
 
-# Must be set before project(): the minimum macOS version the app targets.
+# Must be set before project(): the minimum macOS version the app targets,
+# and the only architecture it's built for (Apple Silicon only — no Intel).
 if(APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum OS X version" FORCE)
+    set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "Build architectures" FORCE)
 endif()
 
 project(OpenMTR VERSION 1.1.0 LANGUAGES CXX)
@@ -40,6 +43,28 @@ include_directories("${CMAKE_CURRENT_BINARY_DIR}")
 # ---- Dependencies ----------------------------------------------------------
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
 
+# DBus is Linux-only: used to watch org.freedesktop.portal.Settings for live
+# light/dark and accent-colour changes, and for a one-shot accent-colour
+# read (see MainWindow::onPortalSettingChanged() and
+# linuxSystemAccentColor() in MainWindow.h), since
+# Qt's own QStyleHints::colorSchemeChanged is unreliable on several
+# distros/desktop environments (notably GNOME) - it may never fire at all
+# even though the OS setting does change. Ships as part of the same qt6-base
+# source package as Widgets/Network, so no extra apt package is needed in CI.
+if(UNIX AND NOT APPLE)
+    find_package(Qt6 REQUIRED COMPONENTS DBus)
+
+    # xcb/xcb-shape: used directly (no CMake config package for either, hence
+    # pkg-config) to cut the click-through input shape for the frameless
+    # window's transparent shadow gutter - see kShadowMargin and
+    # MainWindow::updateLinuxInputShape(). X11/XWayland only, same as the
+    # rest of that gutter-painting code; harmless to look for unconditionally
+    # since a native-Wayland build just won't find an X11 session to use it
+    # against at runtime.
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(XCB_SHAPE REQUIRED IMPORTED_TARGET xcb xcb-shape)
+endif()
+
 # ---- Executable ------------------------------------------------------------
 qt_add_executable(OpenMTR
     main.cpp
@@ -53,12 +78,11 @@ qt_add_executable(OpenMTR
 if(WIN32)
     target_sources(OpenMTR PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/app.rc")
 
-    # Static Qt build: pull in the platform + ICO image plugins explicitly.
-    # (Not needed on macOS, which links Qt dynamically and bundles the Cocoa
-    # plugin via macdeployqt instead — see .github/workflows/build.yml.)
+    # Static Qt build: pull in the platform plugin explicitly. (Not needed
+    # on macOS, which links Qt dynamically and bundles the Cocoa plugin via
+    # macdeployqt instead - see .github/workflows/build.yml.)
     qt_import_plugins(OpenMTR
         INCLUDE Qt6::QWindowsIntegrationPlugin
-        INCLUDE Qt6::QICOPlugin
     )
 endif()
 
@@ -67,6 +91,10 @@ target_link_libraries(OpenMTR PRIVATE
     Qt6::Widgets
     Qt6::Network
 )
+
+if(UNIX AND NOT APPLE)
+    target_link_libraries(OpenMTR PRIVATE Qt6::DBus PkgConfig::XCB_SHAPE)
+endif()
 
 if(WIN32)
     target_link_libraries(OpenMTR PRIVATE
@@ -85,6 +113,21 @@ set_target_properties(OpenMTR PROPERTIES
     WIN32_EXECUTABLE TRUE
     MACOSX_BUNDLE TRUE
 )
+
+# ---- Linux install rules ----------------------------------------------------
+# Only used for the AppImage build (see .github/workflows/build.yml): plain
+# `install(TARGETS)` plus the desktop entry/icon that linuxdeploy expects to
+# find under an AppDir's usr/{bin,share/applications,share/icons/...}. Inert
+# on Windows/macOS, which package differently (static exe / .app bundle).
+if(UNIX AND NOT APPLE)
+    include(GNUInstallDirs)
+    install(TARGETS OpenMTR RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/openmtr.desktop"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/applications")
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/app_icon.png"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps"
+        RENAME "openmtr.png")
+endif()
 
 if(MSVC)
     target_sources(OpenMTR PRIVATE app.manifest)
