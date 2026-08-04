@@ -1,6 +1,7 @@
 # ============================================================================
 #  CMakeLists.txt - build definition for OpenMTR
-#  (Windows static / macOS bundle / Linux AppImage)
+#  (static Qt on every platform: Windows exe / macOS .app bundle / Linux
+#  AppImage - see .github/workflows/build.yml for how each Qt is built)
 # ============================================================================
 
 cmake_minimum_required(VERSION 3.22)
@@ -18,7 +19,7 @@ if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "Build architectures" FORCE)
 endif()
 
-project(OpenMTR VERSION 1.1.0 LANGUAGES CXX)
+project(OpenMTR VERSION 1.3.0 LANGUAGES CXX)
 
 # ---- Language & Qt code generation -----------------------------------------
 set(CMAKE_CXX_STANDARD 20)
@@ -83,13 +84,26 @@ qt_add_executable(OpenMTR
 
 if(WIN32)
     target_sources(OpenMTR PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/app.rc")
+endif()
 
-    # Static Qt build: pull in the platform plugin explicitly. (Not needed
-    # on macOS, which links Qt dynamically and bundles the Cocoa plugin via
-    # macdeployqt instead - see .github/workflows/build.yml.)
-    qt_import_plugins(OpenMTR
-        INCLUDE Qt6::QWindowsIntegrationPlugin
-    )
+# Every platform links a static, feature-trimmed Qt now (see
+# .github/workflows/build.yml), so each one needs its QPA platform plugin
+# pulled in explicitly - qt_import_plugins() can't discover it automatically
+# for a static build the way it would for a dynamic one.
+if(WIN32)
+    qt_import_plugins(OpenMTR INCLUDE Qt6::QWindowsIntegrationPlugin)
+elseif(APPLE)
+    qt_import_plugins(OpenMTR INCLUDE Qt6::QCocoaIntegrationPlugin)
+elseif(UNIX)
+    # xcb only - covers plain X11 and XWayland, which is how the large
+    # majority of desktop Linux sessions still run (including most "Wayland"
+    # desktops, transparently through XWayland). A native-Wayland-only
+    # session with no XWayland would need the separate qtwayland module
+    # built and statically linked too, which pulls in its own build-time
+    # deps (wayland-scanner, wayland-protocols, libxkbcommon) - left out
+    # for now as a size/complexity trade-off; revisit if that turns out to
+    # matter for real users.
+    qt_import_plugins(OpenMTR INCLUDE Qt6::QXcbIntegrationPlugin)
 endif()
 
 # ---- Link libraries (Qt + the platform APIs the app uses) ------------------
