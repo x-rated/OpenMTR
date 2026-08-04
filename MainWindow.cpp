@@ -994,26 +994,29 @@ void MainWindow::scheduleButtonAlignment(int attemptsLeft)
     });
 }
 
-// First-show counterpart to scheduleButtonAlignment() above: same repeated
-// measure-and-correct loop, but run while the window is fully transparent
-// (see showEvent()) so none of the intermediate corrections are ever
-// visible - only the final, settled position is. Reveals as soon as two
-// consecutive measurements 16ms apart both find nothing left to correct,
-// rather than always waiting out the full attempt budget, so the window
-// isn't held hidden any longer than it takes the metrics to actually
-// settle. Still falls back to attemptsLeft running out and revealing
-// anyway, so a platform where something never quite stabilizes can't leave
-// the window permanently invisible.
-void MainWindow::scheduleInitialButtonAlignment(int attemptsLeft, int stableCount)
+// First-show counterpart to scheduleButtonAlignment() above: identical
+// repeated measure-and-correct loop and the same full attempt budget, but
+// run while the window is fully transparent (see showEvent()) so none of
+// the intermediate corrections are ever visible - only the final, settled
+// position is, once the budget runs out and the window is revealed.
+//
+// Deliberately doesn't reveal early just because a measurement or two in a
+// row found nothing to correct: some of what alignTargetEditToLossBar()
+// compensates for (DPI-driven re-scaling in particular) can settle in
+// stages rather than monotonically, so an early "looks stable" read can
+// still be followed by a real, later correction. Revealing on that would
+// have shown the button already misaligned with no further pass left to
+// fix it - the full budget is the same guarantee scheduleButtonAlignment()
+// always relied on; this just spends it out of sight first.
+void MainWindow::scheduleInitialButtonAlignment(int attemptsLeft)
 {
-    const bool changed = alignTargetEditToLossBar();
-    stableCount = changed ? 0 : stableCount + 1;
-    if (stableCount >= 2 || attemptsLeft <= 0) {
+    alignTargetEditToLossBar();
+    if (attemptsLeft <= 0) {
         setWindowOpacity(1.0);
         return;
     }
-    QTimer::singleShot(16, this, [this, attemptsLeft, stableCount]() {
-        scheduleInitialButtonAlignment(attemptsLeft - 1, stableCount);
+    QTimer::singleShot(16, this, [this, attemptsLeft]() {
+        scheduleInitialButtonAlignment(attemptsLeft - 1);
     });
 }
 
