@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Bundle metadata for the macOS build.
+
+     A project-owned template rather than CMake's stock MacOSXBundleInfo.plist.in
+     because the app needs keys that template has no placeholder for — chiefly
+     NSLocalNetworkUsageDescription below. Placeholders are the same
+     MACOSX_BUNDLE_* target properties CMake's own template uses (set in
+     CMakeLists.txt), so they stay driven by PROJECT_VERSION and friends. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+
+	<key>CFBundleName</key>
+	<string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+	<key>CFBundleIdentifier</key>
+	<string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
+	<key>CFBundleExecutable</key>
+	<string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
+	<key>CFBundleIconFile</key>
+	<string>${MACOSX_BUNDLE_ICON_FILE}</string>
+
+	<key>CFBundleVersion</key>
+	<string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
+	<key>CFBundleShortVersionString</key>
+	<string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
+
+	<key>LSMinimumSystemVersion</key>
+	<string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string>
+
+	<!-- Shown verbatim in the system permission prompt macOS 15+ raises the
+	     first time the app sends to a local address. A traceroute's very
+	     first hop is normally the user's own router, so this prompt appears
+	     almost immediately on every run; without this key macOS substitutes
+	     generic wording that gives no reason to grant it. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>OpenMTR sends ICMP probes to every router along the path to the address you enter. The first hops are usually on your own network, so tracing any destination needs local network access.</string>
+
+	<key>NSHumanReadableCopyright</key>
+	<string>${MACOSX_BUNDLE_COPYRIGHT}</string>
+
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleAllowMixedLocalizations</key>
+	<true/>
+
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+
+	<!-- No OpenGL/discrete-GPU work here; let macOS keep the integrated GPU. -->
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+
+	<!-- The UI is a custom-drawn light/dark theme that follows the system
+	     appearance itself (see MainWindow's applyDarkTheme/applyLightTheme);
+	     opting out of automatic appearance switching would leave the native
+	     window chrome out of step with it. -->
+	<key>NSRequiresAquaSystemAppearance</key>
+	<false/>
+</dict>
+</plist>

@@ -162,6 +162,9 @@ static void setMacOsVibrancy(WId winId)
 
 #ifndef Q_OS_WIN
 #include <QtWidgets/QFileDialog>
+#include <QtWidgets/QMenuBar>
+#include <QtWidgets/QMenu>
+#include <QtGui/QAction>
 #endif
 
 // Windows.
@@ -215,6 +218,31 @@ static const QStringList COLUMNS = {
 static bool s_linuxSystemDarkCache = false;
 static bool s_linuxSystemDarkCacheValid = false;
 #endif
+
+// Glyph for the light/dark toggle. It shows the theme the button switches
+// *to*, not the one in effect: a sun while dark, a moon while light. It used
+// to be a sun either way, which said nothing about what pressing it did.
+//
+// Outside Windows the icon "font" is just the system UI font, so the choice
+// is constrained by what that font actually covers — checked against SFNS's
+// cmap rather than guessed:
+//   U+263E ☾ is present natively, so it renders at the same weight and
+//     optical size as everything around it.
+//   U+263D ☽ (the mirrored crescent) and U+2600 ☀ are not, and fall back to
+//     Apple Symbols. That fallback is why the original U+263C ☼ came out
+//     looking like a tiny asterisk. ☀ survives it well enough to keep; ☽
+//     would have been a second glyph at a second set of metrics for no gain.
+// ☀ needs U+FE0E to stop macOS drawing it as a colour emoji; ☾ has no emoji
+// presentation and needs no selector.
+static QString themeButtonGlyph(bool darkMode)
+{
+#ifdef Q_OS_WIN
+    // Segoe Fluent Icons: Brightness / QuietHours.
+    return QString(QChar(darkMode ? 0xE793 : 0xE708));
+#else
+    return darkMode ? QStringLiteral(u"☀︎") : QStringLiteral(u"☾");
+#endif
+}
 
 // Put text on the Windows clipboard as UTF-16. No-op for empty text or if the
 // clipboard can't be opened.
@@ -726,6 +754,12 @@ void MainWindow::setupUi()
     connect(m_copyBtn, &QPushButton::clicked, this, &MainWindow::onCopy);
     tbLayout->addWidget(m_copyBtn);
 
+    m_copyFeedbackTimer.setSingleShot(true);
+    m_copyFeedbackTimer.setInterval(1400);
+    connect(&m_copyFeedbackTimer, &QTimer::timeout, this, [this]() {
+        if (m_copyBtn) m_copyBtn->setText(tr("Copy"));
+    });
+
     m_exportBtn = new QPushButton("Export", this);
     m_exportBtn->setObjectName("actionBtn"); m_exportBtn->setFixedWidth(80); m_exportBtn->setFixedHeight(32);
     m_exportBtn->setAutoDefault(false);
@@ -738,11 +772,7 @@ void MainWindow::setupUi()
     m_themeBtn->setObjectName("themeBtn"); m_themeBtn->setFixedWidth(36); m_themeBtn->setFixedHeight(32);
     m_themeBtn->setAutoDefault(false);
     m_themeBtn->installEventFilter(this);
-#ifdef Q_OS_WIN
-    m_themeBtn->setText(QString(QChar(0xE793)));   // sun glyph in both themes
-#else
-    m_themeBtn->setText(QString(QChar(0x263C)));   // White sun with rays ☼
-#endif
+    m_themeBtn->setText(themeButtonGlyph(m_darkMode));
     connect(m_themeBtn, &QPushButton::clicked, this, &MainWindow::onToggleTheme);
     tbLayout->addWidget(m_themeBtn);
 
@@ -771,32 +801,13 @@ void MainWindow::setupUi()
             .arg(ovSystemAccentShade(m_darkMode).name()));
     m_updateBadge->hide();
 
-    connect(m_infoBtn, &QPushButton::clicked, this, [this]() {
-        m_updateBadge->hide();
-
-        const QString msg = QString("Version %1 (%2) · Qt %3\n\n"
-                "Continuously traces the route to a host and shows per-hop latency and packet loss statistics in real time.\n\n"
-                "© slamb.eu · GPL-2.0 license")
-            .arg(OPENMTR_VERSION)
-            .arg(QSysInfo::buildCpuArchitecture().toUpper()
-                     .replace("X86_64", "AMD64"))
-            .arg(QT_VERSION_STR);
-
-        MicaDialog::show(this,
-            "OpenMTR",
-            msg,
-            m_darkMode,
-            "https://github.com/x-rated/OpenMTR",
-            "GitHub",
-            QString(), QString(),
-            m_updateAvailable ? m_updateReleaseUrl : QString(),
-            m_updateAvailable ? QStringLiteral("Update") : QString(),
-            m_updateAvailable ? QString("Version %1 is available — update to get the latest features and fixes.")
-                                     .arg(m_updateVersion)
-                               : QString());
-    });
+    connect(m_infoBtn, &QPushButton::clicked, this, [this]() { showAboutDialog(); });
     tbLayout->addWidget(m_infoBtn);
     mainLayout->addWidget(m_toolbar);
+
+#ifdef Q_OS_MAC
+    installMacMenuBar();
+#endif
 
     m_iconTipTimer.setSingleShot(true);
     m_iconTipTimer.setInterval(600);
@@ -1110,11 +1121,7 @@ void MainWindow::applyDarkTheme()
 {
     m_darkMode = true;
     m_accent = ovSystemAccentShade(true);
-#ifdef Q_OS_WIN
-    if (m_themeBtn) m_themeBtn->setText(QString(QChar(0xE793)));
-#else
-    if (m_themeBtn) m_themeBtn->setText(QString(QChar(0x263C)));
-#endif
+    if (m_themeBtn) m_themeBtn->setText(themeButtonGlyph(m_darkMode));
     QString sheet = R"(
 QMainWindow, QWidget { background-color: transparent; color: #ffffff; font-family: $FONT_STACK; font-size: 14px; }
 $CENTRAL_BG
@@ -1239,11 +1246,7 @@ void MainWindow::applyLightTheme()
 {
     m_darkMode = false;
     m_accent = ovSystemAccentShade(false);
-#ifdef Q_OS_WIN
-    if (m_themeBtn) m_themeBtn->setText(QString(QChar(0xE793)));
-#else
-    if (m_themeBtn) m_themeBtn->setText(QString(QChar(0x263C)));
-#endif
+    if (m_themeBtn) m_themeBtn->setText(themeButtonGlyph(m_darkMode));
     QString sheet = R"(
 QMainWindow, QWidget { background-color: transparent; color: rgba(0,0,0,0.89); font-family: $FONT_STACK; font-size: 14px; }
 $CENTRAL_BG
@@ -1381,6 +1384,63 @@ void MainWindow::updateAppIcon()
     if (m_titleBar) m_titleBar->setIcon(icon);
 }
 
+// The app's About box. Reached from the toolbar's ⓘ button on every
+// platform, and additionally from the macOS application menu (see
+// installMacMenuBar()), where users expect to find it.
+void MainWindow::showAboutDialog()
+{
+    if (m_updateBadge) m_updateBadge->hide();
+
+    const QString msg = QString("Version %1 (%2) · Qt %3\n\n"
+            "Continuously traces the route to a host and shows per-hop latency and packet loss statistics in real time.\n\n"
+            "© slamb.eu · GPL-2.0 license")
+        .arg(OPENMTR_VERSION)
+        .arg(QSysInfo::buildCpuArchitecture().toUpper()
+                 .replace("X86_64", "AMD64"))
+        .arg(QT_VERSION_STR);
+
+    MicaDialog::show(this,
+        "OpenMTR",
+        msg,
+        m_darkMode,
+        "https://github.com/x-rated/OpenMTR",
+        "GitHub",
+        QString(), QString(),
+        m_updateAvailable ? m_updateReleaseUrl : QString(),
+        m_updateAvailable ? QStringLiteral("Update") : QString(),
+        m_updateAvailable ? QString("Version %1 is available — update to get the latest features and fixes.")
+                                 .arg(m_updateVersion)
+                           : QString());
+}
+
+#ifdef Q_OS_MAC
+// macOS keeps About/Quit in the application menu at the top of the screen,
+// which every Mac app is expected to have — this one had no menu bar at all,
+// so there was nowhere to look. A parentless QMenuBar becomes the shared
+// application menu bar on macOS (it is never drawn inside the window, so the
+// frameless custom chrome is unaffected); QAction::AboutRole then tells Qt
+// to move the item into the "OpenMTR" menu next to Quit, rather than leaving
+// it in the menu it was added to. Menu-bar-only, hence no Q_OS_WIN/LINUX
+// counterpart: there the ⓘ toolbar button already is the discoverable path.
+void MainWindow::installMacMenuBar()
+{
+    // QMainWindow::menuBar() creates it owned by this window; with the
+    // native menu bar (the default on macOS) it renders in the system menu
+    // bar and reports no size, so the frameless custom chrome's layout is
+    // untouched — nothing is drawn inside the window.
+    menuBar()->setNativeMenuBar(true);
+
+    // The menu this is added to is irrelevant — AboutRole relocates the
+    // action into the application menu — but it still needs a home.
+    QMenu* appMenu = menuBar()->addMenu(QStringLiteral("OpenMTR"));
+
+    auto* about = new QAction(tr("About OpenMTR"), this);
+    about->setMenuRole(QAction::AboutRole);
+    connect(about, &QAction::triggered, this, [this]() { showAboutDialog(); });
+    appMenu->addAction(about);
+}
+#endif
+
 // Push the current theme to the DWM: immersive dark mode, rounded corners,
 // extended frame and the Mica backdrop.
 void MainWindow::applyWin11Chrome(bool dark)
@@ -1435,8 +1495,12 @@ void MainWindow::updateInputStyle(QWidget* input, InputAccentBar* accent, bool a
     const QString hoverBg     = m_darkMode ? "#424242" : "#f3f3f3";
     const QString idleBg      = m_darkMode ? "#2d2d2d" : "#f9fbfd";
     const QString activeBg    = m_darkMode ? "#1e1e1e" : "#ffffff";
-    // Keyboard focus is signalled solely by the bottom accent bar; the border
-    // itself keeps its active colour, unchanged from the mouse-active state.
+    // Keyboard focus is signalled solely by the bottom accent bar (shown by
+    // the `active` branch below); the border itself keeps its active colour,
+    // unchanged from the mouse-active state. The parameter stays in the
+    // signature because callers meaningfully distinguish the two states and
+    // the styling could diverge again — it just has no effect right now.
+    Q_UNUSED(keyboardFocused);
     const QString sideColor   = active ? sideActive : sideIdle;
 
     // QSpinBox renders its text through an internal child QLineEdit, which
@@ -3139,6 +3203,15 @@ void MainWindow::onCopy()
     if (!m_copyBtn->isEnabled())
         return;
     copyTextToClipboard(buildTextExport());
+
+    // Copying is otherwise completely silent — the table doesn't change and
+    // nothing else moves, so there's no way to tell it worked. Briefly swap
+    // the button's own label instead of showing a dialog or a toast: it is
+    // where the eye already is, needs no extra widget, and can't obscure the
+    // results. The timer is a member so repeated clicks restart the same
+    // one rather than racing to restore the label early.
+    m_copyBtn->setText(tr("Copied"));
+    m_copyFeedbackTimer.start();
 }
 
 // Save the report via the native Save dialog, as .txt (ASCII box) or .csv.
@@ -3170,12 +3243,45 @@ void MainWindow::onExport()
     if (!path.endsWith(QLatin1String(".txt"), Qt::CaseInsensitive) &&
         !path.endsWith(QLatin1String(".csv"), Qt::CaseInsensitive) &&
         !path.endsWith(QLatin1String(".json"), Qt::CaseInsensitive))
+        // Nothing is appended under "All files" (index 4): the point of
+        // picking it is to name the file yourself, and forcing .txt onto
+        // "trace.log" would give "trace.log.txt".
         path += (ofn.nFilterIndex == 2) ? QStringLiteral(".csv")
               : (ofn.nFilterIndex == 3) ? QStringLiteral(".json")
-                                        : QStringLiteral(".txt");
+              : (ofn.nFilterIndex == 1) ? QStringLiteral(".txt")
+                                        : QString();
+#elif defined(Q_OS_MAC)
+    // Native NSSavePanel, the macOS counterpart of the GetSaveFileNameW
+    // branch above: Qt's Cocoa plugin gives it to us for free as long as
+    // DontUseNativeDialog is *not* set. The Linux branch below has to fall
+    // back to Qt's own widget dialog and hand-style it; on macOS that path
+    // produced a panel that looked nothing like the system one and ignored
+    // the sidebar, iCloud, tags and recent places people expect from Save.
+    const QStringList macFilters{
+        tr("Text files (*.txt)"),
+        tr("CSV files (*.csv)"),
+        tr("JSON files (*.json)"),
+        tr("All files (*.*)")
+    };
+    QString selectedFilter = macFilters.first();
+    QString path = QFileDialog::getSaveFileName(
+        this, tr("Export results"), defaultName,
+        macFilters.join(QStringLiteral(";;")), &selectedFilter);
+    if (path.isEmpty()) return;
+
+    if (!path.endsWith(QLatin1String(".txt"), Qt::CaseInsensitive) &&
+        !path.endsWith(QLatin1String(".csv"), Qt::CaseInsensitive) &&
+        !path.endsWith(QLatin1String(".json"), Qt::CaseInsensitive)) {
+        // "All files" matches none of these and so appends nothing — see the
+        // Windows branch above.
+        if      (selectedFilter.contains(".csv"))  path += QStringLiteral(".csv");
+        else if (selectedFilter.contains(".json")) path += QStringLiteral(".json");
+        else if (selectedFilter.contains(".txt"))  path += QStringLiteral(".txt");
+    }
 #else
-    // No native save-panel API used here (unlike Windows' GetSaveFileNameW);
-    // Qt's own file dialog covers the same job on Linux/macOS.
+    // No native save-panel API used here (unlike Windows' GetSaveFileNameW
+    // and macOS's NSSavePanel above); Qt's own file dialog covers the same
+    // job on Linux.
     QFileDialog dialog(this, tr("Export results"));
     dialog.setOption(QFileDialog::DontUseNativeDialog, true);
     // QFileDialog enables a QSizeGrip in the bottom-right corner by default
@@ -3226,9 +3332,10 @@ void MainWindow::onExport()
     if (!path.endsWith(QLatin1String(".txt"), Qt::CaseInsensitive) &&
         !path.endsWith(QLatin1String(".csv"), Qt::CaseInsensitive) &&
         !path.endsWith(QLatin1String(".json"), Qt::CaseInsensitive)) {
+        // "All files" appends nothing — see the Windows branch above.
         if      (selectedFilter.contains(".csv"))  path += QStringLiteral(".csv");
         else if (selectedFilter.contains(".json")) path += QStringLiteral(".json");
-        else                                       path += QStringLiteral(".txt");
+        else if (selectedFilter.contains(".txt"))  path += QStringLiteral(".txt");
     }
 #endif
     QFile f(path);

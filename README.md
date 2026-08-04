@@ -70,8 +70,34 @@ Duration: 2:00
 
 ## Requirements
 
-- Windows 11
-- AMD64 or ARM64 processor
+- Windows 11 (AMD64 or ARM64), macOS 13 Ventura or newer (Apple Silicon), or a current Linux desktop (x86_64 or aarch64)
+
+---
+
+## Installing on macOS
+
+Open the `.dmg` and drag **OpenMTR** to Applications.
+
+The first launch is refused with a message that the app is damaged or cannot be
+checked for malware, offering only **Move to Trash**. Nothing is wrong with the
+download — the app is signed ad-hoc rather than with an Apple Developer ID, and
+macOS blocks such apps outright once they carry the quarantine flag a browser
+attaches. Unlike apps signed with a Developer ID but not notarised, there is no
+**Open Anyway** button in *Privacy & Security* to fall back on.
+
+Clear the quarantine flag once, after moving the app to Applications:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/OpenMTR.app
+```
+
+It then launches normally, and the step is not needed again until you install a
+new version. Removing this friction for good requires a paid Apple Developer
+account so releases can be signed with a Developer ID and notarised.
+
+macOS will also ask for **local network** access on the first trace. A
+traceroute's first hop is normally your own router, so tracing anything needs
+it.
 
 ---
 
@@ -79,7 +105,18 @@ Duration: 2:00
 
 Releases are built automatically via GitHub Actions on every push to `main` — AMD64 and ARM64 binaries are produced in parallel and uploaded as artifacts. No local Qt installation is needed.
 
-For a local build you need Visual Studio 2022 (C++20), CMake 3.22+, Ninja, and a static Qt 6 build. The workflow in `.github/workflows/build.yml` documents the exact steps used in CI.
+For a local build you need CMake 3.22+, Ninja, a C++20 compiler and Qt 6:
+
+- **Windows** — Visual Studio 2022 and a static Qt 6 build.
+- **macOS** — Qt 6 from Qt's official installer. Homebrew's `qt` also builds,
+  but it is compiled for whichever macOS release the machine runs, so a bundle
+  made with it will not start on older systems, and it links ICU, which adds
+  ~35 MB to the app.
+- **Linux** — the distribution's `qt6-base-dev` is enough to build and run. CI
+  instead compiles Qt from source with `-no-icu`, purely to keep ICU out of the
+  AppImage.
+
+The workflow in `.github/workflows/build.yml` documents the exact steps used in CI.
 
 ---
 

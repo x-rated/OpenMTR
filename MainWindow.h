@@ -349,7 +349,11 @@ public:
     static constexpr int kVMargin   = 4;
     static constexpr int kInset     = 1;
     static constexpr int kRingWidth = 2;
-    static constexpr int kRadius    = 5.5;
+    // qreal, not int: this is fed straight to drawRoundedRect() on an
+    // antialiased QRectF, so the half pixel is meaningful — as an int it
+    // silently truncated to 5 and drew a slightly tighter corner than the
+    // rest of the focus ring geometry assumes.
+    static constexpr qreal kRadius  = 5.5;
 
     explicit FocusRing(QWidget* parent = nullptr) : QFocusFrame(parent)
     {
@@ -2181,6 +2185,10 @@ private:
     void    applyDarkTheme();
     void    applyLightTheme();
     void    updateAppIcon();
+    void    showAboutDialog();
+#ifdef Q_OS_MAC
+    void    installMacMenuBar();
+#endif
     void    showFocusRing(QWidget* w);
     void    hideFocusRing();
     bool    isFocusRingTarget(QWidget* w) const;
@@ -2240,6 +2248,8 @@ private:
     QString         m_updateVersion;
     QString         m_updateReleaseUrl;
     QTimer          m_iconTipTimer;
+    // Restores the Copy button's label after its "Copied" confirmation.
+    QTimer          m_copyFeedbackTimer;
     QPushButton*    m_iconTipPending = nullptr;
     QString         m_iconTipText;
 
@@ -2391,7 +2401,7 @@ private:
                         const QString& accentUrl = QString(),
                         const QString& accentText = QString(),
                         const QString& infoBarText = QString())
-        : QDialog(parent, Qt::Dialog | Qt::FramelessWindowHint), m_darkMode(darkMode)
+        : QDialog(parent, Qt::Dialog | Qt::FramelessWindowHint)
     {
         setAttribute(Qt::WA_TranslucentBackground);
         setWindowModality(Qt::ApplicationModal);
@@ -2803,7 +2813,6 @@ private:
     QPushButton* m_linkBtn   = nullptr;
     QPushButton* m_linkBtn2  = nullptr;
     FocusRing*   m_focusRing = nullptr;
-    bool m_darkMode          = false;
 
     bool isRingTarget(QWidget* w) const {
         return w && (w == m_closeBtn || w == m_accentBtn || w == m_linkBtn || w == m_linkBtn2);
