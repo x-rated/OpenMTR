@@ -464,6 +464,28 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
     const bool isV6      = (dest->sa_family == AF_INET6);
     const int  payloadLen = (int)opts.pingsize;
 
+    // Echo id stamped into every outgoing probe of this trace.
+    const uint16_t echoId = (uint16_t)(getpid() & 0xFFFF);
+#ifdef __APPLE__
+    // macOS (like the BSDs) delivers a copy of every inbound ICMP message to
+    // every open ICMP dgram socket — there is no per-socket demultiplexing
+    // by echo id the way Linux ping sockets do it. The sequence number alone
+    // is deterministic ((hop << 11) | slot), so two concurrent traces (a
+    // second OpenMTR, ping, mtr …) collide on it and record each other's
+    // packets: a silent hop inherits a fabricated address from a foreign
+    // reply, and a foreign packet clearing `pending` early makes the real
+    // reply arrive "unmatched" — phantom loss. macOS also transmits our id
+    // unrewritten, so the id we sent is the id that comes back (in the outer
+    // header of echo replies, in the quoted original packet of Time
+    // Exceeded / Unreachable) — filter on it.
+    const bool filterEchoId = true;
+#else
+    // Linux rewrites the outgoing id to the socket's kernel-assigned "port"
+    // and already delivers only matching traffic to this socket, so the id
+    // we sent never appears on the wire and needs no checking here.
+    const bool filterEchoId = false;
+#endif
+
     ULONGLONG intervalMs = (ULONGLONG)(opts.interval * 1000);
     if (intervalMs == 0)
         intervalMs = 1000;
@@ -525,12 +547,17 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
     }
 
     // Send one probe for a hop. The sequence number packs the hop index into
-    // its high byte so a reply can be matched back to its hop without any
-    // extra per-hop state travelling over the wire (see the reply parsing
-    // below).
+    // its top five bits so a reply can be matched back to its hop without
+    // any extra per-hop state travelling over the wire (see the reply
+    // parsing below). Five bits, not a whole byte: MAX_HOPS only needs five,
+    // and the eleven bits left for the per-hop slot counter push its
+    // wrap-around from 256 probes (~4 min at the 1 s interval — a reply
+    // delayed past that could match a fresh probe of the same hop) out to
+    // 2048 (~34 min).
+    static_assert(MAX_HOPS <= 32, "hop index must fit the top 5 bits of icmp_seq");
     auto submit = [&](PosixHopState& hs) {
         hs.slot++;
-        uint16_t seq  = (uint16_t)(((hs.ttl - 1) << 8) | (hs.slot & 0xFF));
+        uint16_t seq  = (uint16_t)(((hs.ttl - 1) << 11) | (hs.slot & 0x7FF));
         hs.sentSeq    = seq;
         hs.sentTime   = GetTickCount64();
         hs.lastProbeTick = hs.sentTime;
@@ -543,7 +570,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
             struct icmp6_hdr req6 = {};
             req6.icmp6_type  = ICMP6_ECHO_REQUEST;
             req6.icmp6_code  = 0;
-            req6.icmp6_id    = htons(getpid() & 0xFFFF);
+            req6.icmp6_id    = htons(echoId);
             req6.icmp6_seq   = htons(seq);
             req6.icmp6_cksum = 0;
 
@@ -564,12 +591,17 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
             struct icmp req4 = {};
             req4.icmp_type  = ICMP_ECHO;
             req4.icmp_code  = 0;
-            req4.icmp_id    = htons(getpid() & 0xFFFF);
+            req4.icmp_id    = htons(echoId);
             req4.icmp_seq   = htons(seq);
             req4.icmp_cksum = 0;
 
-            std::vector<unsigned char> pkt(sizeof(struct icmp) + payloadLen, ' ');
-            std::memcpy(pkt.data(), &req4, sizeof(struct icmp));
+            // ICMP_MINLEN (8: type, code, checksum, id, seq), NOT
+            // sizeof(struct icmp) — that struct embeds a whole struct ip in
+            // its union and is 28 bytes, which used to pad every v4 probe
+            // with 20 extra bytes (so v4 and v6 measured with different
+            // packet sizes than the one configured).
+            std::vector<unsigned char> pkt(ICMP_MINLEN + payloadLen, ' ');
+            std::memcpy(pkt.data(), &req4, ICMP_MINLEN);
 
             uint16_t cksum = calculate_checksum((const uint16_t*)pkt.data(), pkt.size());
             std::memcpy(pkt.data() + 2, &cksum, sizeof(cksum));
@@ -592,6 +624,46 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
             return hs.lastProbeTick + UNKNOWN_PATROL_MS;
         }
         return hs.t0 + hs.slot * intervalMs;
+    };
+
+    // Locate our quoted echo request inside an ICMPv6 error message (Time
+    // Exceeded / Destination Unreachable): skip the outer 8-byte ICMPv6
+    // header, then the quoted packet's 40-byte IPv6 header, then any
+    // extension headers in its Next Header chain. We never send extension
+    // headers ourselves, but tunnels and middleboxes can insert them into
+    // the quoted copy — a fixed +40 offset would then read garbage where
+    // the echo header was expected. Returns nullptr if the chain can't be
+    // walked to an ICMPv6 header within the buffer.
+    auto quotedIcmp6 = [](const char* buf, int len) -> const struct icmp6_hdr* {
+        int off = 8;
+        if (len < off + 40)
+            return nullptr;
+        uint8_t next = (uint8_t)buf[off + 6];   // IPv6 header's Next Header
+        off += 40;
+        while (next != IPPROTO_ICMPV6) {
+            // Every walkable extension header starts with Next Header and
+            // (except Fragment, fixed 8 bytes) its own length in 8-octet
+            // units excluding the first.
+            if (off + 8 > len)
+                return nullptr;
+            switch (next) {
+                case IPPROTO_HOPOPTS:
+                case IPPROTO_ROUTING:
+                case IPPROTO_DSTOPTS:
+                    next = (uint8_t)buf[off];
+                    off += ((uint8_t)buf[off + 1] + 1) * 8;
+                    break;
+                case IPPROTO_FRAGMENT:
+                    next = (uint8_t)buf[off];
+                    off += 8;
+                    break;
+                default:
+                    return nullptr;         // ESP/unknown — nothing we sent
+            }
+        }
+        if (off + (int)sizeof(struct icmp6_hdr) > len)
+            return nullptr;
+        return (const struct icmp6_hdr*)(buf + off);
     };
 
     bool anyActive = true;
@@ -674,6 +746,19 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
             break;
         }
 
+#ifndef __linux__
+        // macOS/BSD have no error queue, but poll() can still flag POLLERR
+        // (e.g. an asynchronous ENETUNREACH on the socket). Only the Linux
+        // block below ever reads it; on this platform the condition would
+        // persist and poll() would keep returning immediately — a busy loop
+        // pinning a core. Clear the pending error and move on.
+        if ((fds[1].revents & POLLERR) && !(fds[1].revents & POLLIN)) {
+            int soerr = 0;
+            socklen_t slen = sizeof(soerr);
+            ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &slen);
+        }
+#endif
+
         if (fds[1].revents & POLLIN) {
             while (true) {
                 sockaddr_storage from = {};
@@ -702,7 +787,10 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                     }
 #endif
                     int icmp_len = n - ip_hdr_len;
-                    if (icmp_len < (int)sizeof(struct icmp))
+                    // Complete echo header is ICMP_MINLEN (8) bytes;
+                    // sizeof(struct icmp) is 28 and would drop legitimately
+                    // short ICMP messages.
+                    if (icmp_len < ICMP_MINLEN)
                         continue;
                     struct icmp* icmp = (struct icmp*)(readBuf + ip_hdr_len);
                     uint16_t seq  = 0;
@@ -710,6 +798,10 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                     bool isReply  = false;
 
                     if (icmp->icmp_type == ICMP_ECHOREPLY) {
+                        // Not ours (see filterEchoId above) — skip, don't
+                        // let it clear another hop's pending probe.
+                        if (filterEchoId && ntohs(icmp->icmp_id) != echoId)
+                            continue;
                         seq     = ntohs(icmp->icmp_seq);
                         isReply = true;
                         valid   = true;
@@ -723,6 +815,10 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                             if (inner_ip_hdr_len >= 20 && icmp_len >= 8 + inner_ip_hdr_len + 8) {
                                 struct icmp* inner_icmp =
                                     (struct icmp*)(readBuf + ip_hdr_len + 8 + inner_ip_hdr_len);
+                                // The quoted original packet is our own echo
+                                // request — its id says whose probe expired.
+                                if (filterEchoId && ntohs(inner_icmp->icmp_id) != echoId)
+                                    continue;
                                 seq   = ntohs(inner_icmp->icmp_seq);
                                 valid = true;
                             }
@@ -734,6 +830,10 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                             if (inner_ip_hdr_len >= 20 && icmp_len >= 8 + inner_ip_hdr_len + 8) {
                                 struct icmp* inner_icmp =
                                     (struct icmp*)(readBuf + ip_hdr_len + 8 + inner_ip_hdr_len);
+                                // The quoted original packet is our own echo
+                                // request — its id says whose probe expired.
+                                if (filterEchoId && ntohs(inner_icmp->icmp_id) != echoId)
+                                    continue;
                                 seq   = ntohs(inner_icmp->icmp_seq);
                                 valid = true;
                             }
@@ -741,7 +841,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                     }
 
                     if (valid) {
-                        int hopIndex = seq >> 8;
+                        int hopIndex = seq >> 11;
                         if (hopIndex >= 0 && hopIndex < MAX_HOPS) {
                             PosixHopState& hs = hops[hopIndex];
                             if (hs.pending && (hs.sentSeq == seq)) {
@@ -779,25 +879,32 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                     bool isReply  = false;
 
                     if (icmp6->icmp6_type == ICMP6_ECHO_REPLY) {
+                        // Not ours (see filterEchoId above) — skip.
+                        if (filterEchoId && ntohs(icmp6->icmp6_id) != echoId)
+                            continue;
                         seq     = ntohs(icmp6->icmp6_seq);
                         isReply = true;
                         valid   = true;
                     } else if (icmp6->icmp6_type == ICMP6_TIME_EXCEEDED) {
-                        if (n >= 8 + 40 + 8) {
-                            struct icmp6_hdr* inner_icmp6 = (struct icmp6_hdr*)(readBuf + 8 + 40);
+                        if (const struct icmp6_hdr* inner_icmp6 = quotedIcmp6(readBuf, n)) {
+                            // Quoted original packet — check whose probe it was.
+                            if (filterEchoId && ntohs(inner_icmp6->icmp6_id) != echoId)
+                                continue;
                             seq   = ntohs(inner_icmp6->icmp6_seq);
                             valid = true;
                         }
                     } else if (icmp6->icmp6_type == ICMP6_DST_UNREACH) {
-                        if (n >= 8 + 40 + 8) {
-                            struct icmp6_hdr* inner_icmp6 = (struct icmp6_hdr*)(readBuf + 8 + 40);
+                        if (const struct icmp6_hdr* inner_icmp6 = quotedIcmp6(readBuf, n)) {
+                            // Quoted original packet — check whose probe it was.
+                            if (filterEchoId && ntohs(inner_icmp6->icmp6_id) != echoId)
+                                continue;
                             seq   = ntohs(inner_icmp6->icmp6_seq);
                             valid = true;
                         }
                     }
 
                     if (valid) {
-                        int hopIndex = seq >> 8;
+                        int hopIndex = seq >> 11;
                         if (hopIndex >= 0 && hopIndex < MAX_HOPS) {
                             PosixHopState& hs = hops[hopIndex];
                             if (hs.pending && (hs.sentSeq == seq)) {
@@ -875,7 +982,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                 // embedded-original-packet parsing above.
                 uint16_t seq = 0;
                 bool haveSeq = false;
-                if (!isV6 && n >= (int)sizeof(struct icmp)) {
+                if (!isV6 && n >= ICMP_MINLEN) {
                     haveSeq = true;
                     seq = ntohs(((struct icmp*)errBuf)->icmp_seq);
                 } else if (isV6 && n >= (int)sizeof(struct icmp6_hdr)) {
@@ -885,7 +992,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                 if (!haveSeq)
                     continue;
 
-                int hopIndex = seq >> 8;
+                int hopIndex = seq >> 11;
                 if (hopIndex < 0 || hopIndex >= MAX_HOPS)
                     continue;
                 PosixHopState& hs = hops[hopIndex];
