@@ -7,8 +7,14 @@ cmake_minimum_required(VERSION 3.22)
 
 # Must be set before project(): the minimum macOS version the app targets,
 # and the only architecture it's built for (Apple Silicon only — no Intel).
+# 13.0 is what the official Qt 6.11 binaries are built for — every bundled
+# framework and plugin declares minos 13. Declaring more than Qt needs just
+# excludes working systems (Ventura); declaring less lets macOS launch a
+# bundle whose Qt then refuses to load, killing the app at startup instead
+# of showing a clean "requires macOS 13" dialog. The CI job re-checks this
+# against every binary it ships (see .github/workflows/build.yml).
 if(APPLE)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum OS X version" FORCE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum OS X version" FORCE)
     set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "Build architectures" FORCE)
 endif()
 
@@ -114,6 +120,62 @@ set_target_properties(OpenMTR PROPERTIES
     MACOSX_BUNDLE TRUE
 )
 
+# ---- macOS bundle identity & icon ------------------------------------------
+# Without these, CMake's default Info.plist template ships placeholders that
+# users actually see: CFBundleIdentifier "com.yourcompany.OpenMTR" and no
+# Finder/Dock icon at all. The .icns is generated at build time from
+# app_icon.png with the stock sips/iconutil tools (present on every macOS
+# install, including CI runners).
+#
+# The full iconset is emitted up to 512@2x (1024 px). app_icon.png is
+# currently a 256 px master, so the entries above it are upscales — the
+# artwork is smooth gradient shapes with no fine detail or text, which
+# survives that far better than a detailed icon would, and macOS otherwise
+# upscales the 256 px entry itself for Launchpad, Get Info and large Finder
+# icon views. Dropping a 1024 px app_icon.png in place makes every size
+# natively crisp with no change here.
+if(APPLE)
+    set(APP_ICON_SRC "${CMAKE_CURRENT_SOURCE_DIR}/app_icon.png")
+    set(APP_ICONSET  "${CMAKE_CURRENT_BINARY_DIR}/app_icon.iconset")
+    set(APP_ICNS     "${CMAKE_CURRENT_BINARY_DIR}/app_icon.icns")
+
+    # sips -z takes height then width; every entry here is square. The
+    # @2x names are what iconutil expects — same pixel count as the plain
+    # entry one step up, but tagged as the Retina variant of the smaller
+    # logical size.
+    set(_icns_cmds COMMAND ${CMAKE_COMMAND} -E make_directory "${APP_ICONSET}")
+    foreach(spec "16:icon_16x16" "32:icon_16x16@2x" "32:icon_32x32"
+                 "64:icon_32x32@2x" "128:icon_128x128" "256:icon_128x128@2x"
+                 "256:icon_256x256" "512:icon_256x256@2x" "512:icon_512x512"
+                 "1024:icon_512x512@2x")
+        string(REPLACE ":" ";" spec "${spec}")
+        list(GET spec 0 px)
+        list(GET spec 1 name)
+        list(APPEND _icns_cmds
+            COMMAND sips -z ${px} ${px} "${APP_ICON_SRC}" --out "${APP_ICONSET}/${name}.png")
+    endforeach()
+
+    add_custom_command(
+        OUTPUT "${APP_ICNS}"
+        ${_icns_cmds}
+        COMMAND iconutil -c icns "${APP_ICONSET}" -o "${APP_ICNS}"
+        DEPENDS "${APP_ICON_SRC}"
+        COMMENT "Generating app_icon.icns from app_icon.png"
+        VERBATIM
+    )
+    target_sources(OpenMTR PRIVATE "${APP_ICNS}")
+    set_source_files_properties("${APP_ICNS}" PROPERTIES
+        MACOSX_PACKAGE_LOCATION "Resources")
+    set_target_properties(OpenMTR PROPERTIES
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.in"
+        MACOSX_BUNDLE_GUI_IDENTIFIER       "eu.slamb.OpenMTR"
+        MACOSX_BUNDLE_BUNDLE_NAME          "OpenMTR"
+        MACOSX_BUNDLE_BUNDLE_VERSION       "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}"
+        MACOSX_BUNDLE_ICON_FILE            "app_icon.icns"
+    )
+endif()
+
 # ---- Linux install rules ----------------------------------------------------
 # Only used for the AppImage build (see .github/workflows/build.yml): plain
 # `install(TARGETS)` plus the desktop entry/icon that linuxdeploy expects to
@@ -127,6 +189,15 @@ if(UNIX AND NOT APPLE)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/app_icon.png"
         DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps"
         RENAME "openmtr.png")
+endif()
+
+# Clang/GCC counterpart of the MSVC /W4 block below. Not /WX-equivalent
+# (-Werror): the Windows build gates on its own warnings, and turning every
+# future compiler's new diagnostics into a hard build failure on the two
+# platforms whose toolchain version isn't pinned would break CI on unrelated
+# upgrades.
+if(NOT MSVC)
+    target_compile_options(OpenMTR PRIVATE -Wall -Wextra)
 endif()
 
 if(MSVC)
