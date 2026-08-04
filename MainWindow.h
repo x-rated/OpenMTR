@@ -2210,6 +2210,7 @@ private:
     void           updateToolbarResponsiveLayout();
     bool           alignTargetEditToLossBar();
     void           scheduleButtonAlignment(int attemptsLeft = 30);
+    void           scheduleInitialButtonAlignment(int attemptsLeft = 30, int stableCount = 0);
 
     // Title bar, toolbar inputs, action buttons and icon-tooltip state.
     TitleBarWidget* m_titleBar     = nullptr;
@@ -2232,6 +2233,9 @@ private:
     // metrics - checkbox/spin-box indicators etc. - a tick after the first
     // layout pass); see updateToolbarResponsiveLayout().
     int             m_targetEditIdealWidth = kTargetEditDefaultWidth;
+    // First showEvent() only: kept true until scheduleInitialButtonAlignment()
+    // has settled and revealed the window - see showEvent().
+    bool            m_firstShowPending = true;
     QWidget*        m_toolbar      = nullptr;
     QLineEdit*      m_targetEdit   = nullptr;
     std::function<void()> m_targetClearUpdate;

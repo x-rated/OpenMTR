@@ -994,6 +994,29 @@ void MainWindow::scheduleButtonAlignment(int attemptsLeft)
     });
 }
 
+// First-show counterpart to scheduleButtonAlignment() above: same repeated
+// measure-and-correct loop, but run while the window is fully transparent
+// (see showEvent()) so none of the intermediate corrections are ever
+// visible - only the final, settled position is. Reveals as soon as two
+// consecutive measurements 16ms apart both find nothing left to correct,
+// rather than always waiting out the full attempt budget, so the window
+// isn't held hidden any longer than it takes the metrics to actually
+// settle. Still falls back to attemptsLeft running out and revealing
+// anyway, so a platform where something never quite stabilizes can't leave
+// the window permanently invisible.
+void MainWindow::scheduleInitialButtonAlignment(int attemptsLeft, int stableCount)
+{
+    const bool changed = alignTargetEditToLossBar();
+    stableCount = changed ? 0 : stableCount + 1;
+    if (stableCount >= 2 || attemptsLeft <= 0) {
+        setWindowOpacity(1.0);
+        return;
+    }
+    QTimer::singleShot(16, this, [this, attemptsLeft, stableCount]() {
+        scheduleInitialButtonAlignment(attemptsLeft - 1, stableCount);
+    });
+}
+
 // Below the 1100px minimum, the toolbar's addStretch() - the gap between
 // the target/ping/IPv6/Start group on the left and the Copy/Export/theme/info
 // group on the right - should keep shrinking towards 0 as the window narrows,
@@ -2489,10 +2512,27 @@ void MainWindow::syncLinuxGutter()
 // here is final. Safe to call on every show (e.g. restoring from
 // minimized): alignTargetEditToLossBar() is a no-op once the button is
 // already in the right place.
+//
+// The very first show is different: correcting the button position live,
+// in front of the user, is what used to make the toolbar visibly jump
+// right after launch. scheduleInitialButtonAlignment() instead does the
+// same settling-and-correcting behind a fully transparent window and only
+// reveals it once the position has stopped moving, so the window simply
+// appears already in its final layout. Later shows (restoring from
+// minimized, moving between monitors) go through the ordinary
+// scheduleButtonAlignment() below unchanged - by then the window is
+// already visible, so hiding it again would itself be the more jarring
+// behaviour.
 void MainWindow::showEvent(QShowEvent* event)
 {
     QMainWindow::showEvent(event);
-    scheduleButtonAlignment();
+    if (m_firstShowPending) {
+        m_firstShowPending = false;
+        setWindowOpacity(0.0);
+        scheduleInitialButtonAlignment();
+    } else {
+        scheduleButtonAlignment();
+    }
 }
 
 // Re-layout the table contents while a trace is live.
