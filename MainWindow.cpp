@@ -219,28 +219,25 @@ static bool s_linuxSystemDarkCache = false;
 static bool s_linuxSystemDarkCacheValid = false;
 #endif
 
-// Glyph for the light/dark toggle. It shows the theme the button switches
-// *to*, not the one in effect: a sun while dark, a moon while light. It used
-// to be a sun either way, which said nothing about what pressing it did.
+// Glyph for the light/dark toggle button. Fixed — always a sun, on every
+// platform, regardless of which theme is currently active. It used to show
+// the theme it would switch *to* (sun in dark mode, moon in light mode),
+// but that meant the icon itself changed on every toggle, which read as a
+// bug rather than a feature.
 //
 // Outside Windows the icon "font" is just the system UI font, so the choice
 // is constrained by what that font actually covers — checked against SFNS's
-// cmap rather than guessed:
-//   U+263E ☾ is present natively, so it renders at the same weight and
-//     optical size as everything around it.
-//   U+263D ☽ (the mirrored crescent) and U+2600 ☀ are not, and fall back to
-//     Apple Symbols. That fallback is why the original U+263C ☼ came out
-//     looking like a tiny asterisk. ☀ survives it well enough to keep; ☽
-//     would have been a second glyph at a second set of metrics for no gain.
-// ☀ needs U+FE0E to stop macOS drawing it as a colour emoji; ☾ has no emoji
-// presentation and needs no selector.
-static QString themeButtonGlyph(bool darkMode)
+// cmap rather than guessed: U+2600 ☀ is not present natively and falls back
+// to Apple Symbols, which is why the original U+263C ☼ came out looking
+// like a tiny asterisk. ☀ survives that fallback well enough to keep, with
+// U+FE0E to stop macOS drawing it as a colour emoji.
+static QString themeButtonGlyph()
 {
 #ifdef Q_OS_WIN
-    // Segoe Fluent Icons: Brightness / QuietHours.
-    return QString(QChar(darkMode ? 0xE793 : 0xE708));
+    // Segoe Fluent Icons: Brightness.
+    return QString(QChar(0xE793));
 #else
-    return darkMode ? QStringLiteral(u"☀︎") : QStringLiteral(u"☾");
+    return QStringLiteral(u"☀︎");
 #endif
 }
 
@@ -772,7 +769,7 @@ void MainWindow::setupUi()
     m_themeBtn->setObjectName("themeBtn"); m_themeBtn->setFixedWidth(36); m_themeBtn->setFixedHeight(32);
     m_themeBtn->setAutoDefault(false);
     m_themeBtn->installEventFilter(this);
-    m_themeBtn->setText(themeButtonGlyph(m_darkMode));
+    m_themeBtn->setText(themeButtonGlyph());
     connect(m_themeBtn, &QPushButton::clicked, this, &MainWindow::onToggleTheme);
     tbLayout->addWidget(m_themeBtn);
 
@@ -1121,7 +1118,7 @@ void MainWindow::applyDarkTheme()
 {
     m_darkMode = true;
     m_accent = ovSystemAccentShade(true);
-    if (m_themeBtn) m_themeBtn->setText(themeButtonGlyph(m_darkMode));
+    if (m_themeBtn) m_themeBtn->setText(themeButtonGlyph());
     QString sheet = R"(
 QMainWindow, QWidget { background-color: transparent; color: #ffffff; font-family: $FONT_STACK; font-size: 14px; }
 $CENTRAL_BG
@@ -1246,7 +1243,7 @@ void MainWindow::applyLightTheme()
 {
     m_darkMode = false;
     m_accent = ovSystemAccentShade(false);
-    if (m_themeBtn) m_themeBtn->setText(themeButtonGlyph(m_darkMode));
+    if (m_themeBtn) m_themeBtn->setText(themeButtonGlyph());
     QString sheet = R"(
 QMainWindow, QWidget { background-color: transparent; color: rgba(0,0,0,0.89); font-family: $FONT_STACK; font-size: 14px; }
 $CENTRAL_BG
