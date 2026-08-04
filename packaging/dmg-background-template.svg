@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800">
+  <!--
+    OpenMTR DMG background — design template (2x / Retina).
+
+    Canvas is 1200x800 = the 600x400 pt Finder window at 2x. Export two PNGs
+    from the final artwork:
+        dmg-background.png      600x400
+        dmg-background@2x.png   1200x800
+    CI combines them into a HiDPI .tiff (see .github/workflows/build.yml).
+
+    Everything inside <g id="guides"> is scaffolding — DELETE that group
+    before exporting. The rest is a usable starting point, not a finished
+    design; replace it freely as long as the constraints below hold.
+
+    HARD CONSTRAINTS (Finder draws on top of this image and ignores it):
+
+    1. Icon positions are fixed by the workflow's create-dmg call. The app
+       icon sits centred at (340, 380) here and the Applications alias at
+       (860, 380) — both 256x256 at this scale. Keep artwork out from under
+       them; anything there is hidden by the icons.
+
+    2. Finder draws the icon LABELS ("OpenMTR", "Applications") in the
+       marked strips, and it recolours them with the system appearance:
+       near-black in light mode, white in dark mode. The background cannot
+       adapt. So the label strips must stay MID-TONE — roughly 40-60%
+       luminance, low saturation — or the text becomes unreadable in one of
+       the two modes. This is the single most common mistake in DMG
+       backgrounds; a pretty near-white background looks broken for every
+       dark-mode user.
+
+    3. No text near the bottom edge: Finder's window can show a status bar
+       there on some systems.
+  -->
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"   stop-color="#5b6672"/>
+      <stop offset="0.55" stop-color="#4a5560"/>
+      <stop offset="1"   stop-color="#3f4954"/>
+    </linearGradient>
+    <linearGradient id="arrow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0"   stop-color="#ffffff" stop-opacity="0.15"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0.75"/>
+      <stop offset="1"   stop-color="#ffffff" stop-opacity="0.95"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Mid-tone base: keeps both black and white label text legible. -->
+  <rect width="1200" height="800" fill="url(#bg)"/>
+
+  <!-- Optional title area. Safe zone is y = 60..190. -->
+  <text x="600" y="140" text-anchor="middle"
+        font-family="-apple-system, SF Pro Display, Helvetica Neue, sans-serif"
+        font-size="52" font-weight="600" fill="#ffffff" opacity="0.92">OpenMTR</text>
+  <text x="600" y="188" text-anchor="middle"
+        font-family="-apple-system, SF Pro Text, Helvetica Neue, sans-serif"
+        font-size="26" fill="#ffffff" opacity="0.6">Drag the app into Applications</text>
+
+  <!--
+    Drag cue. The whole group stays inside the gap between the two icon
+    boxes (x = 468..732) so an icon can never cover it.
+
+    Three trailing chevrons plus a solid head read as motion rather than as
+    a static divider — the point is to say "drag this way", which a plain
+    line does not. They fade in towards the target, so the eye is pulled
+    left-to-right, from the app to Applications.
+  -->
+  <g transform="translate(0,380)">
+    <g fill="none" stroke="#ffffff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M 496 -19 L 514 0 L 496 19" opacity="0.22"/>
+      <path d="M 528 -19 L 546 0 L 528 19" opacity="0.38"/>
+      <path d="M 560 -19 L 578 0 L 560 19" opacity="0.54"/>
+    </g>
+    <rect x="596" y="-6" width="72" height="12" rx="6" fill="url(#arrow)"/>
+    <path d="M 654 -29 L 706 0 L 654 29 Z" fill="#ffffff" opacity="0.95"/>
+  </g>
+
+  <g id="guides">
+    <!-- DELETE THIS GROUP BEFORE EXPORTING -->
+    <g fill="none" stroke="#ff3b30" stroke-width="2" stroke-dasharray="8 6">
+      <rect x="212" y="252" width="256" height="256"/>
+      <rect x="732" y="252" width="256" height="256"/>
+    </g>
+    <g fill="none" stroke="#ffcc00" stroke-width="2" stroke-dasharray="8 6">
+      <rect x="180" y="516" width="320" height="60"/>
+      <rect x="700" y="516" width="320" height="60"/>
+    </g>
+    <g font-family="monospace" font-size="18" fill="#ff3b30">
+      <text x="212" y="242">app icon 256x256 @ (340,380)</text>
+      <text x="732" y="242">Applications @ (860,380)</text>
+    </g>
+    <g font-family="monospace" font-size="18" fill="#ffcc00">
+      <text x="180" y="600">label strip — keep mid-tone</text>
+      <text x="700" y="600">label strip — keep mid-tone</text>
+    </g>
+    <g fill="none" stroke="#34c759" stroke-width="2" stroke-dasharray="4 4">
+      <rect x="40" y="40" width="1120" height="720"/>
+    </g>
+    <text x="48" y="34" font-family="monospace" font-size="18" fill="#34c759">safe area (40 px margin)</text>
+  </g>
+</svg>
