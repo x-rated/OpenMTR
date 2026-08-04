@@ -1,8 +1,10 @@
 # ==========================================================================
 #  GitHub Actions — build OpenMTR for Windows, macOS and Linux
 #
-#  Builds static Windows AMD64 + ARM64 binaries, a macOS ARM64 app bundle,
-#  and a Linux x86_64 AppImage in parallel, and uploads them as artifacts
+#  Builds static Windows AMD64 + ARM64 binaries, a static macOS ARM64 app
+#  bundle, and static Linux AMD64 + ARM64 AppImages in parallel (every
+#  platform links a feature-trimmed Qt built from source in CI - see each
+#  job below), and uploads them as artifacts
 #  (each downloads as OpenMTR-Windows-<ARCH>.zip / OpenMTR-macOS.zip /
 #  OpenMTR-Linux-x86_64.zip, containing a plain OpenMTR.exe / OpenMTR.dmg /
 #  OpenMTR-x86_64.AppImage respectively). Triggered on pushes to main, pull
@@ -199,43 +201,126 @@ jobs:
           name: ${{ matrix.artifact }}
           path: build\OpenMTR.exe
 
-  # macOS is built differently from Windows: a dynamically-linked Qt from
-  # Homebrew, bundled into the .app via macdeployqt, rather than a fully
-  # static Qt build. Trying to build Qt itself from source for macOS in CI
-  # (the way the Windows jobs do) would be far slower for comparatively
-  # little benefit, since macOS apps conventionally ship their dependencies
-  # bundled in the .app anyway rather than truly statically linked.
+  # macOS now builds Qt from source too, the same way Windows does: a
+  # static, feature-trimmed Qt instead of the full dynamic Homebrew build
+  # that used to get bundled wholesale into the .app via macdeployqt. That
+  # old approach copied entire unstripped Qt frameworks (plus their Homebrew
+  # dependency dylibs) into every .app - by far the biggest contributor to
+  # the old DMG size. One difference from the Windows feature list: this
+  # platform's export dialog goes through Qt's own QFileDialog (see
+  # MainWindow.cpp's Q_OS_WIN vs. else branch), unlike Windows' native
+  # GetSaveFileNameW - so filedialog/filesystemmodel/sizegrip stay enabled
+  # here even though Windows disables them.
   build-macos:
     runs-on: macos-latest
     name: Build (macOS ARM64)
+    env:
+      QT_PREFIX: /Users/runner/Qt-static
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
-      - name: Remove untrusted Homebrew taps
-        run: brew untap aws/tap || true
+      - name: Restore Qt cache
+        id: qt-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.QT_PREFIX }}
+          key: qt-static-${{ env.QT_VERSION }}-macos-arm64-${{ env.QT_CACHE_SUFFIX }}
 
-      - name: Install Qt and Ninja
-        run: brew install qt ninja
+      - name: Install Ninja
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: brew install ninja
 
-      - name: Configure & build
+      - name: Fetch Qt source
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: |
+          base="https://download.qt.io/official_releases/qt/6.11/${{ env.QT_VERSION }}/submodules"
+          curl -fL "$base/qtbase-everywhere-src-${{ env.QT_VERSION }}.tar.xz" -o qtbase.tar.xz --max-time 600
+          mkdir -p /Users/runner/Qt-src
+          tar -xf qtbase.tar.xz -C /Users/runner/Qt-src
+
+      - name: Configure, build & install Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: |
+          cd /Users/runner/Qt-src/qtbase-everywhere-src-${{ env.QT_VERSION }}
+          ./configure \
+            -prefix "$QT_PREFIX" \
+            -release -static \
+            -platform macx-clang \
+            -no-opengl \
+            -c++std c++20 \
+            -nomake examples -nomake tests \
+            -no-feature-sql -no-feature-printsupport -no-feature-concurrent \
+            -no-feature-systemtrayicon -no-feature-whatsthis -no-feature-wizard \
+            -no-feature-colordialog -no-feature-fontdialog \
+            -no-feature-mdiarea -no-feature-dockwidget \
+            -no-feature-jpeg -no-feature-gif \
+            -no-feature-imageformat_ppm \
+            -no-feature-imageformat_xbm \
+            -no-feature-image_heuristic_mask -no-feature-image_text \
+            -no-feature-movie \
+            -no-feature-picture \
+            -no-feature-pdf \
+            -no-feature-textmarkdownreader -no-feature-textmarkdownwriter \
+            -no-feature-textodfwriter \
+            -no-feature-emojisegmenter \
+            -no-feature-translation \
+            -no-feature-undocommand -no-feature-undostack -no-feature-undogroup \
+            -no-feature-statustip \
+            -no-feature-tabbar -no-feature-tabwidget \
+            -no-feature-fontcombobox \
+            -no-feature-listwidget \
+            -no-feature-treewidget \
+            -no-feature-mimetype \
+            -no-feature-toolbox \
+            -no-feature-calendarwidget -no-feature-datetimeedit \
+            -no-feature-dial -no-feature-lcdnumber \
+            -no-feature-rubberband \
+            -no-feature-textedit -no-feature-textbrowser \
+            -no-feature-progressbar -no-feature-progressdialog \
+            -no-feature-inputdialog -no-feature-messagebox -no-feature-errormessage \
+            -no-feature-undoview \
+            -no-feature-style-mac \
+            -no-feature-graphicsview -no-feature-graphicseffect \
+            -confirm-license -opensource \
+            -- -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 -B /Users/runner/Qt-build
+          cmake --build /Users/runner/Qt-build --parallel
+          cmake --install /Users/runner/Qt-build
+
+      - name: Generate Qt forwarding headers
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: |
+          python3 - "$QT_PREFIX" <<'PY'
+          import re, pathlib, sys
+          prefix = pathlib.Path(sys.argv[1])
+          pattern = re.compile(
+              r'^ *(?:template\s*<[^>]*>\s*)?(?:class|struct)\s+(?:Q_\w+_EXPORT\s+)(Q[A-Za-z0-9_]+)',
+              re.M)
+          for module in ('QtWidgets', 'QtGui', 'QtCore', 'QtNetwork'):
+              d = prefix / 'include' / module
+              if not d.is_dir():
+                  continue
+              for h in d.glob('q*.h'):
+                  content = h.read_text(errors='ignore')
+                  for m in pattern.finditer(content):
+                      name = m.group(1)
+                      if name.endswith('Private'):
+                          continue
+                      fwd = d / name
+                      if not fwd.exists():
+                          fwd.write_text(f'#include "{h.name}"')
+          PY
+
+      - name: Build app
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH=$(brew --prefix qt)
+            -DCMAKE_PREFIX_PATH="$QT_PREFIX"
           cmake --build build --parallel
 
-      - name: Bundle Qt frameworks into the app
-        run: |
-          $(brew --prefix qt)/bin/macdeployqt build/OpenMTR.app -always-overwrite -no-strip -libpath=$(brew --prefix)/lib
-
-      - name: Fix codesign (ad-hoc)
-        run: |
-          # Homebrew's own dependency dylibs carry signatures that don't
-          # survive being copied into the bundle; re-sign the whole thing
-          # so macOS Gatekeeper doesn't reject it outright.
-          codesign --force --deep --sign - build/OpenMTR.app
+      - name: Codesign (ad-hoc)
+        run: codesign --force --deep --sign - build/OpenMTR.app
 
       - name: Package into a DMG
         run: |
@@ -247,20 +332,19 @@ jobs:
           name: OpenMTR-macOS
           path: build/OpenMTR.dmg
 
-  # Linux, like macOS, links Qt dynamically (from the distro's packages)
-  # rather than building a static Qt from source, and bundles the runtime
-  # dependencies at packaging time — here via linuxdeploy + its Qt plugin,
-  # which play the same role appimage-side that macdeployqt plays for the
-  # .app bundle above. Two architectures, like the Windows matrix — but
-  # unlike Windows (cross-compiled via the ARM64 MSVC toolset), each runs
-  # natively on GitHub's own AMD64/ARM64 Linux runners, so there's no
-  # cross-compilation to set up. Runs on ubuntu-26.04 for a modern enough
-  # apt-packaged Qt (6.10+) to use QStyleHints::colorSchemeChanged natively
-  # (see MainWindow's live light/dark theme handling) — at the cost of a
-  # newer minimum glibc (resolute's, vs. jammy's 2.35) than the AppImage
-  # would need on an older runner, i.e. less portability to older/LTS
-  # distros. Accepted trade-off: this build targets current desktop
-  # systems, not older server/LTS ones.
+  # Linux now builds a static, feature-trimmed Qt from source too, same as
+  # Windows and macOS - rather than the old approach of linking against the
+  # distro's full dynamic Qt package and having linuxdeploy-plugin-qt bundle
+  # every Qt lib (and its transitive deps) into the AppImage. linuxdeploy is
+  # still used, but without --plugin qt: there's no Qt runtime left to
+  # bundle, it's just wrapping the (now much smaller) static binary plus the
+  # desktop file/icon into a single-file AppImage for double-click
+  # convenience. linuxdeploy's own excludelist already assumes core system
+  # libs (glibc, libxcb, libX11, ...) are present on the target, so those
+  # stay as ordinary dynamic runtime dependencies rather than being bundled.
+  # Same platform-list caveat as macOS: filedialog/filesystemmodel/sizegrip
+  # stay enabled here (Windows-only disables them), because the export
+  # dialog on this platform goes through Qt's own QFileDialog.
   build-linux:
     strategy:
       matrix:
@@ -278,48 +362,140 @@ jobs:
 
     runs-on: ${{ matrix.runner }}
     name: Build (${{ matrix.label }})
+    env:
+      QT_PREFIX: /home/runner/Qt-static
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
-      - name: Install Qt, Ninja & FUSE
+      - name: Restore Qt cache
+        id: qt-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.QT_PREFIX }}
+          key: qt-static-${{ env.QT_VERSION }}-linux-${{ matrix.arch }}-${{ env.QT_CACHE_SUFFIX }}
+
+      - name: Install build & Qt dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            qt6-base-dev libqt6svg6-dev ninja-build \
-            libgl1-mesa-dev libfuse2 \
-            libxcb-shape0-dev
+            build-essential ninja-build pkg-config perl python3 \
+            xz-utils libfuse2 \
+            libfontconfig1-dev libfreetype-dev \
+            libx11-dev libx11-xcb-dev libxext-dev libxfixes-dev libxi-dev \
+            libxrender-dev libxcb1-dev libxcb-cursor-dev libxcb-glx0-dev \
+            libxcb-icccm4-dev libxcb-image0-dev libxcb-keysyms1-dev \
+            libxcb-randr0-dev libxcb-shape0-dev libxcb-shm0-dev \
+            libxcb-sync-dev libxcb-xfixes0-dev libxcb-xinerama0-dev \
+            libxcb-xkb-dev libxcb-util-dev libxcb-render0-dev libxcb-render-util0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libdbus-1-dev libglib2.0-dev zlib1g-dev
 
-      - name: Configure & build
+      - name: Fetch Qt source
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: |
+          base="https://download.qt.io/official_releases/qt/6.11/${{ env.QT_VERSION }}/submodules"
+          wget -q "$base/qtbase-everywhere-src-${{ env.QT_VERSION }}.tar.xz" -O qtbase.tar.xz
+          mkdir -p /home/runner/Qt-src
+          tar -xf qtbase.tar.xz -C /home/runner/Qt-src
+
+      - name: Configure, build & install Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: |
+          cd /home/runner/Qt-src/qtbase-everywhere-src-${{ env.QT_VERSION }}
+          ./configure \
+            -prefix "$QT_PREFIX" \
+            -release -static \
+            -platform linux-g++ \
+            -no-opengl \
+            -c++std c++20 \
+            -nomake examples -nomake tests \
+            -no-feature-sql -no-feature-printsupport -no-feature-concurrent \
+            -no-feature-systemtrayicon -no-feature-whatsthis -no-feature-wizard \
+            -no-feature-colordialog -no-feature-fontdialog \
+            -no-feature-mdiarea -no-feature-dockwidget \
+            -no-feature-jpeg -no-feature-gif \
+            -no-feature-imageformat_ppm \
+            -no-feature-imageformat_xbm \
+            -no-feature-image_heuristic_mask -no-feature-image_text \
+            -no-feature-movie \
+            -no-feature-picture \
+            -no-feature-pdf \
+            -no-feature-textmarkdownreader -no-feature-textmarkdownwriter \
+            -no-feature-textodfwriter \
+            -no-feature-emojisegmenter \
+            -no-feature-translation \
+            -no-feature-undocommand -no-feature-undostack -no-feature-undogroup \
+            -no-feature-statustip \
+            -no-feature-tabbar -no-feature-tabwidget \
+            -no-feature-fontcombobox \
+            -no-feature-listwidget \
+            -no-feature-treewidget \
+            -no-feature-mimetype \
+            -no-feature-toolbox \
+            -no-feature-calendarwidget -no-feature-datetimeedit \
+            -no-feature-dial -no-feature-lcdnumber \
+            -no-feature-rubberband \
+            -no-feature-textedit -no-feature-textbrowser \
+            -no-feature-progressbar -no-feature-progressdialog \
+            -no-feature-inputdialog -no-feature-messagebox -no-feature-errormessage \
+            -no-feature-undoview \
+            -no-feature-graphicsview -no-feature-graphicseffect \
+            -confirm-license -opensource \
+            -- -B /home/runner/Qt-build
+          cmake --build /home/runner/Qt-build --parallel
+          cmake --install /home/runner/Qt-build
+
+      - name: Generate Qt forwarding headers
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: |
+          python3 - "$QT_PREFIX" <<'PY'
+          import re, pathlib, sys
+          prefix = pathlib.Path(sys.argv[1])
+          pattern = re.compile(
+              r'^ *(?:template\s*<[^>]*>\s*)?(?:class|struct)\s+(?:Q_\w+_EXPORT\s+)(Q[A-Za-z0-9_]+)',
+              re.M)
+          for module in ('QtWidgets', 'QtGui', 'QtCore', 'QtNetwork'):
+              d = prefix / 'include' / module
+              if not d.is_dir():
+                  continue
+              for h in d.glob('q*.h'):
+                  content = h.read_text(errors='ignore')
+                  for m in pattern.finditer(content):
+                      name = m.group(1)
+                      if name.endswith('Private'):
+                          continue
+                      fwd = d / name
+                      if not fwd.exists():
+                          fwd.write_text(f'#include "{h.name}"')
+          PY
+
+      - name: Configure & build app
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
             -DCMAKE_INSTALL_PREFIX=/usr
           cmake --build build --parallel
 
       - name: Install into AppDir
         run: cmake --install build --prefix AppDir/usr
 
-      - name: Fetch linuxdeploy & its Qt plugin
+      - name: Fetch linuxdeploy
         run: |
           base="https://github.com/linuxdeploy"
           wget -q "$base/linuxdeploy/releases/download/continuous/linuxdeploy-${{ matrix.linuxdeploy_arch }}.AppImage"
-          wget -q "$base/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-${{ matrix.linuxdeploy_arch }}.AppImage"
           chmod +x linuxdeploy-*.AppImage
 
       - name: Build AppImage
         env:
-          # linuxdeploy needs to find qmake to locate the Qt install; the
-          # apt package doesn't put it on PATH under its versioned name.
-          QMAKE: /usr/lib/qt6/bin/qmake6
           # Squashing the AppImage's own FUSE mount inside a container
           # without --privileged is unreliable; extract-and-run avoids it.
           APPIMAGE_EXTRACT_AND_RUN: 1
         run: |
           ./linuxdeploy-${{ matrix.linuxdeploy_arch }}.AppImage \
             --appdir AppDir \
-            --plugin qt \
             --output appimage \
             --desktop-file openmtr.desktop \
             --icon-file app_icon.png
