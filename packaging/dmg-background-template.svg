@@ -38,11 +38,6 @@
       <stop offset="0.55" stop-color="#4a5560"/>
       <stop offset="1"   stop-color="#3f4954"/>
     </linearGradient>
-    <linearGradient id="arrow" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0"   stop-color="#ffffff" stop-opacity="0.15"/>
-      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0.75"/>
-      <stop offset="1"   stop-color="#ffffff" stop-opacity="0.95"/>
-    </linearGradient>
   </defs>
 
   <!-- Mid-tone base: keeps both black and white label text legible. -->
@@ -60,19 +55,17 @@
     Drag cue. The whole group stays inside the gap between the two icon
     boxes (x = 468..732) so an icon can never cover it.
 
-    Three trailing chevrons plus a solid head read as motion rather than as
-    a static divider — the point is to say "drag this way", which a plain
-    line does not. They fade in towards the target, so the eye is pulled
-    left-to-right, from the app to Applications.
+    One continuous stroked arrow — shaft plus an open chevron head, drawn in
+    a single visual weight with round caps. Deliberately not a mix of
+    trailing chevrons and a filled head: two different arrow languages next
+    to each other read as clutter, not motion. And deliberately one flat
+    colour: a gradient stroked along a horizontal line has a zero-height
+    bounding box, which some renderers (resvg among them) refuse to paint.
   -->
-  <g transform="translate(0,380)">
-    <g fill="none" stroke="#ffffff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M 496 -19 L 514 0 L 496 19" opacity="0.22"/>
-      <path d="M 528 -19 L 546 0 L 528 19" opacity="0.38"/>
-      <path d="M 560 -19 L 578 0 L 560 19" opacity="0.54"/>
-    </g>
-    <rect x="596" y="-6" width="72" height="12" rx="6" fill="url(#arrow)"/>
-    <path d="M 654 -29 L 706 0 L 654 29 Z" fill="#ffffff" opacity="0.95"/>
+  <g transform="translate(0,380)" fill="none" stroke="#ffffff" opacity="0.85"
+     stroke-linecap="round" stroke-linejoin="round" stroke-width="11">
+    <path d="M 512 0 L 684 0"/>
+    <path d="M 648 -33 L 684 0 L 648 33"/>
   </g>
 
   <g id="guides">
