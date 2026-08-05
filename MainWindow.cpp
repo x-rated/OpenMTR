@@ -52,88 +52,6 @@ static void setMacOsDarkAppearance(WId winId, bool dark)
     reinterpret_cast<void (*)(id, SEL, id)>(objc_msgSend)(
         window, sel_registerName("setAppearance:"), appearance);
 }
-
-// A struct with NSRect's memory layout (origin.x/y, size.w/h as CGFloat).
-// Passing a struct like this as an argument to an objc_msgSend call is fine
-// on arm64 (the only macOS architecture this project targets) — it's only
-// *returning* a struct that would need the special objc_msgSend_stret
-// entry point on some other ABIs, and this file never reads a frame/bounds
-// value back, only ever hands one in (see the oversized-frame trick below).
-struct OvNSRect { double x, y, w, h; };
-
-// Install a translucent NSVisualEffectView behind the window's content, the
-// closest macOS equivalent to the Mica backdrop used on Windows 11 (see
-// applyWin11Chrome() / dwmapi.h usage elsewhere in this file). Safe to call
-// repeatedly (e.g. once per theme toggle): a tag on the view lets it detect
-// its own view already being installed and no-op instead of stacking a new
-// one each time.
-static void setMacOsVibrancy(WId winId)
-{
-    id contentView = (id)winId;
-    if (!contentView) return;
-
-    id window = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(
-        contentView, sel_registerName("window"));
-    if (!window) return;
-
-    id nsContentView = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(
-        window, sel_registerName("contentView"));
-    if (!nsContentView) return;
-
-    Class effectClass = objc_getClass("NSVisualEffectView");
-    if (!effectClass) return;
-
-    const long kVibrancyTag = 0x4F764D54L; // arbitrary 'OvMt' marker
-    id existing = reinterpret_cast<id (*)(id, SEL, long)>(objc_msgSend)(
-        nsContentView, sel_registerName("viewWithTag:"), kVibrancyTag);
-    if (existing) return; // already installed on this window
-
-    id alloc = reinterpret_cast<id (*)(Class, SEL)>(objc_msgSend)(
-        effectClass, sel_registerName("alloc"));
-    if (!alloc) return;
-
-    // A generously oversized frame, combined with the width/height-sizable
-    // autoresizing mask below, avoids ever needing to read back the parent
-    // view's current bounds (see the OvNSRect comment above) — the view
-    // snaps to fit as soon as it's added and the window resizes it.
-    using InitWithFrameFn = id (*)(id, SEL, OvNSRect);
-    const OvNSRect bigRect{0, 0, 100000, 100000};
-    id effectView = reinterpret_cast<InitWithFrameFn>(objc_msgSend)(
-        alloc, sel_registerName("initWithFrame:"), bigRect);
-    if (!effectView) return;
-
-    // material 21 = NSVisualEffectMaterialUnderWindowBackground (matches
-    // the system's own window-chrome blur since Big Sur); blendingMode 0 =
-    // BehindWindow; state 1 = Active (stays lit even when not key, like
-    // Mica). Values passed as plain longs rather than named constants since
-    // the enum symbols require an extra AppKit.h/framework header this
-    // objc/runtime-only file doesn't otherwise need.
-    reinterpret_cast<void (*)(id, SEL, long)>(objc_msgSend)(
-        effectView, sel_registerName("setMaterial:"), 21L);
-    reinterpret_cast<void (*)(id, SEL, long)>(objc_msgSend)(
-        effectView, sel_registerName("setBlendingMode:"), 0L);
-    reinterpret_cast<void (*)(id, SEL, long)>(objc_msgSend)(
-        effectView, sel_registerName("setState:"), 1L);
-    // NSViewWidthSizable (2) | NSViewHeightSizable (16).
-    reinterpret_cast<void (*)(id, SEL, unsigned long)>(objc_msgSend)(
-        effectView, sel_registerName("setAutoresizingMask:"), 2UL | 16UL);
-    reinterpret_cast<void (*)(id, SEL, long)>(objc_msgSend)(
-        effectView, sel_registerName("setTag:"), kVibrancyTag);
-
-    // Insert behind every existing subview (NSWindowBelow = -1) so Qt's own
-    // content keeps painting on top of the blur instead of being hidden by
-    // it; relativeTo: nil means "relative to all other views".
-    using AddSubviewFn = void (*)(id, SEL, id, long, id);
-    reinterpret_cast<AddSubviewFn>(objc_msgSend)(
-        nsContentView, sel_registerName("addSubview:positioned:relativeTo:"),
-        effectView, -1L, static_cast<id>(nullptr));
-
-    // alloc+init left us owning one reference; addSubview: took its own, so
-    // release ours to avoid leaking the view (it stays alive, held by the
-    // view hierarchy).
-    reinterpret_cast<void (*)(id, SEL)>(objc_msgSend)(
-        effectView, sel_registerName("release"));
-}
 #endif
 
 // Qt.
@@ -390,26 +308,32 @@ MainWindow::MainWindow(QWidget* parent)
     m_warmupTimer->setInterval(1500);
     connect(m_warmupTimer, &QTimer::timeout, this, &MainWindow::onWarmupEnd);
 
-#ifdef Q_OS_LINUX
+#if defined(Q_OS_LINUX) || defined(Q_OS_MAC)
     // Windows gets its light/dark switch via WM_SETTINGCHANGE in
-    // nativeEvent(); on Linux, Qt >= 6.5's QStyleHints::colorSchemeChanged
-    // is the equivalent — a signal that fires only when the desktop's
-    // light/dark preference actually changes (via the XDG portal or the
-    // gtk3 platform theme plugin), never spuriously just because the
-    // in-app theme button (onToggleTheme()) has since diverged from it.
-    // Requires Qt >= 6.5 (see build.yml: the Linux CI build's apt-packaged
-    // Qt is 6.10+), hence the version guard for anyone building against an
-    // older local Qt.
+    // nativeEvent(); on Linux and macOS, Qt >= 6.5's
+    // QStyleHints::colorSchemeChanged is the equivalent — a signal that
+    // fires only when the OS light/dark preference actually changes (via
+    // the XDG portal / gtk3 platform theme on Linux, the Cocoa appearance
+    // observer on macOS), never spuriously just because the in-app theme
+    // button (onToggleTheme()) has since diverged from it. Without this,
+    // macOS only picked its theme up once at launch and ignored System
+    // Settings changes for the rest of the run. Requires Qt >= 6.5 (both
+    // CI builds are far past that), hence the version guard for anyone
+    // building against an older local Qt.
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
     connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged,
             this, [this](Qt::ColorScheme scheme) {
         const bool newDark = (scheme == Qt::ColorScheme::Dark);
+#ifdef Q_OS_LINUX
         s_linuxSystemDarkCache = newDark;
         s_linuxSystemDarkCacheValid = true;
+#endif
         if (newDark) applyDarkTheme();
         else          applyLightTheme();
     });
 #endif
+#endif
+#ifdef Q_OS_LINUX
     // Belt-and-suspenders alongside the QStyleHints connect above:
     // QStyleHints::colorSchemeChanged depends on Qt's own platform-theme
     // plugin (gtk3/kde) picking up the change, which is confirmed broken on
@@ -445,6 +369,7 @@ MainWindow::MainWindow(QWidget* parent)
     // one-shot-per-launch check.
     QTimer::singleShot(5000, this, &MainWindow::checkForUpdates);
 
+#ifndef Q_OS_MAC
     auto* scCopy   = new QShortcut(QKeySequence::Copy, this);
     auto* scExport = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_S), this);
     connect(scCopy,   &QShortcut::activated, this, &MainWindow::onCopy);
@@ -464,6 +389,15 @@ MainWindow::MainWindow(QWidget* parent)
     connect(qApp, &QApplication::focusChanged, this,
             [tuneEditShortcuts](QWidget*, QWidget* now) { tuneEditShortcuts(now); });
     tuneEditShortcuts(m_targetEdit);   // the app opens with the target field focused
+#else
+    // On macOS ⌘C/⌘S belong to the menu-bar actions instead (see
+    // installMacMenuBar()) — a parallel pair of QShortcuts on the same keys
+    // would make each sequence ambiguous and fire neither. The focus rule
+    // is identical, just applied to the actions.
+    connect(qApp, &QApplication::focusChanged, this,
+            [this](QWidget*, QWidget* now) { updateMacMenuActionState(now); });
+    updateMacMenuActionState(m_targetEdit);   // opens with the target focused
+#endif
 }
 
 // Members tear themselves down; nothing to do by hand, except unhook the
@@ -1453,14 +1387,67 @@ void MainWindow::installMacMenuBar()
     // untouched — nothing is drawn inside the window.
     menuBar()->setNativeMenuBar(true);
 
-    // The menu this is added to is irrelevant — AboutRole relocates the
-    // action into the application menu — but it still needs a home.
-    QMenu* appMenu = menuBar()->addMenu(QStringLiteral("OpenMTR"));
+    // File also hosts the About action: AboutRole relocates it into the
+    // application menu regardless of which menu it is added to, and parking
+    // it here avoids a dedicated "OpenMTR" QMenu that would be left empty
+    // after the relocation.
+    QMenu* fileMenu = menuBar()->addMenu(tr("File"));
 
     auto* about = new QAction(tr("About OpenMTR"), this);
     about->setMenuRole(QAction::AboutRole);
     connect(about, &QAction::triggered, this, [this]() { showAboutDialog(); });
-    appMenu->addAction(about);
+    fileMenu->addAction(about);
+
+    // The report actions own their shortcuts on macOS — the same keys the
+    // other platforms bind through QShortcut. They can't do both: a QAction
+    // in the native menu and a QShortcut on the same key make the sequence
+    // ambiguous for Qt and neither fires. Enabled state mirrors the toolbar
+    // buttons plus the focused-text-field rule; both are recomputed by
+    // updateMacMenuActionState().
+    m_actExport = new QAction(tr("Export…"), this);
+    m_actExport->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_S));
+    m_actExport->setEnabled(false);
+    connect(m_actExport, &QAction::triggered, this, &MainWindow::onExport);
+    fileMenu->addAction(m_actExport);
+
+    QMenu* editMenu = menuBar()->addMenu(tr("Edit"));
+    // "Copy Report", not plain "Copy": ⌘C copies the whole report (same as
+    // the toolbar button), not a selection, and while a text field has
+    // focus the action is disabled so the field's own copy takes the key.
+    m_actCopy = new QAction(tr("Copy Report"), this);
+    m_actCopy->setShortcut(QKeySequence::Copy);
+    m_actCopy->setEnabled(false);
+    connect(m_actCopy, &QAction::triggered, this, &MainWindow::onCopy);
+    editMenu->addAction(m_actCopy);
+
+    // Minimal Window menu — every Mac app has one; without it the standard
+    // ⌘M does nothing and the window can't be zoomed from the keyboard.
+    QMenu* windowMenu = menuBar()->addMenu(tr("Window"));
+    auto* minimizeAct = new QAction(tr("Minimize"), this);
+    minimizeAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_M));
+    connect(minimizeAct, &QAction::triggered, this, [this]() { showMinimized(); });
+    windowMenu->addAction(minimizeAct);
+    auto* zoomAct = new QAction(tr("Zoom"), this);
+    connect(zoomAct, &QAction::triggered, this, [this]() {
+        if (isMaximized()) showNormal();
+        else               showMaximized();
+    });
+    windowMenu->addAction(zoomAct);
+}
+
+// See the header comment: actions stay enabled only while their toolbar
+// button is enabled AND no text field holds focus (a disabled native menu
+// item releases its key equivalent, so ⌘C falls through to the field —
+// exactly what the QShortcut::setEnabled(false) path does elsewhere).
+void MainWindow::updateMacMenuActionState(QWidget* focusWidget)
+{
+    const bool inTextField = focusWidget &&
+        (focusWidget->inherits("QLineEdit") ||
+         focusWidget->inherits("QAbstractSpinBox"));
+    if (m_actCopy)
+        m_actCopy->setEnabled(!inTextField && m_copyBtn && m_copyBtn->isEnabled());
+    if (m_actExport)
+        m_actExport->setEnabled(!inTextField && m_exportBtn && m_exportBtn->isEnabled());
 }
 #endif
 
@@ -1943,6 +1930,16 @@ QString MainWindow::cellTooltipText(const QModelIndex& idx) const
 // and Enter handling for inputs and buttons.
 bool MainWindow::eventFilter(QObject* obj, QEvent* event)
 {
+#ifdef Q_OS_MAC
+    // Keep the menu-bar report actions in step with the toolbar buttons
+    // they mirror. Both buttons already have this filter installed, so
+    // every setEnabled() on them lands here — no need to chase each of the
+    // call sites that toggle them.
+    if (event->type() == QEvent::EnabledChange &&
+        (obj == m_copyBtn || obj == m_exportBtn)) {
+        updateMacMenuActionState(QApplication::focusWidget());
+    }
+#endif
 #ifdef Q_OS_LINUX
     // There's no inset "dead zone" widget — the toolbar/table sit flush to
     // the window edge — so the left/right/bottom resize grab band is
@@ -2595,12 +2592,6 @@ void MainWindow::changeEvent(QEvent* event)
         // paintCardShadow() mirrors that via isActiveWindow(), so this just
         // needs a repaint to pick up the new state.
         update();
-    }
-#endif
-#ifdef Q_OS_MAC
-    if (event->type() == QEvent::Show) {
-        setMacOsDarkAppearance(winId(), m_darkMode);
-        setMacOsVibrancy(winId());
     }
 #endif
 }
@@ -3393,6 +3384,21 @@ void MainWindow::onExport()
             for (int c = 0; c < COLUMNS.size(); ++c) {
                 auto* item = m_table->item(i, c);
                 QString val = item ? item->text() : "";
+                // Neutralise spreadsheet formula injection, but only in the
+                // hostname column — the one place a remote party controls
+                // the text: a hop along the path can name itself "=cmd|..."
+                // via reverse DNS and Excel/LibreOffice would run the cell
+                // as a formula when this CSV is opened. Risky leading
+                // characters get the OWASP-recommended quote prefix. The
+                // other columns are app-generated numbers, addresses and
+                // fixed strings, where prefixing could only distort data.
+                if (c == ColHostname && !val.isEmpty() && val != QLatin1String("-")) {
+                    const QChar c0 = val.at(0);
+                    if (c0 == QLatin1Char('=') || c0 == QLatin1Char('+') ||
+                        c0 == QLatin1Char('-') || c0 == QLatin1Char('@') ||
+                        c0 == QLatin1Char('\t'))
+                        val.prepend(QLatin1Char('\''));
+                }
                 if (val.contains(',') || val.contains('"'))
                     val = "\"" + val.replace("\"", "\"\"") + "\"";
                 cells << val;

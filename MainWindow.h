@@ -287,6 +287,32 @@ inline QString ovAccentRgba(const QColor& c, double alpha)
         .arg(alpha, 0, 'f', 2);
 }
 
+// UI font family for the hand-styled dialogs. "Segoe UI" only exists on
+// Windows; on the other platforms a literal request for it would fall back
+// anyway, but only after a noisy qt.qpa.fonts warning and a font-alias scan
+// on first use — so name the real system family up front.
+inline QString ovUiFontFamily()
+{
+#ifdef Q_OS_WIN
+    return QStringLiteral("Segoe UI");
+#else
+    return QApplication::font().family();
+#endif
+}
+
+// Open a link in the browser — web schemes only. Every URL this app hands
+// out is expected to be https, but one of them (the update dialog's
+// Download button) comes from the GitHub API response rather than from a
+// string literal; refusing anything but http/https means a poisoned value
+// there can never launch an arbitrary local URL-scheme handler.
+inline void ovOpenWebUrl(const QString& url)
+{
+    const QUrl parsed(url);
+    const QString scheme = parsed.scheme().toLower();
+    if (scheme == QLatin1String("https") || scheme == QLatin1String("http"))
+        QDesktopServices::openUrl(parsed);
+}
+
 // Read one colour from the Windows accent palette at the given byte offset.
 inline QColor ovAccentSlot(int byteOffset, const QColor& fallback)
 {
@@ -2188,6 +2214,12 @@ private:
     void    showAboutDialog();
 #ifdef Q_OS_MAC
     void    installMacMenuBar();
+    // Recompute the menu-bar actions' enabled state from the toolbar
+    // buttons they mirror plus the focused widget — see the comment at the
+    // shortcut block in the constructor for the focus rule they share.
+    void    updateMacMenuActionState(QWidget* focusWidget);
+    QAction* m_actCopy   = nullptr;   // Edit → Copy Report (⌘C)
+    QAction* m_actExport = nullptr;   // File → Export…    (⌘S)
 #endif
     void    showFocusRing(QWidget* w);
     void    hideFocusRing();
@@ -2429,7 +2461,7 @@ private:
             auto* bodyLabel = new QLabel(para, m_card);
             bodyLabel->setObjectName("micaBody");
             bodyLabel->setWordWrap(true);
-            QFont bodyFont("Segoe UI");
+            QFont bodyFont(ovUiFontFamily());
             bodyFont.setPixelSize(14);
             bodyLabel->setFont(bodyFont);
             bodyLabel->setFixedHeight(bodyLabel->heightForWidth(bodyContentW));
@@ -2460,7 +2492,7 @@ private:
                 "QPushButton#micaLink:pressed { color: %3; }")
                 .arg(rest, hover, pressed));
 
-            QFont bodyFont("Segoe UI");
+            QFont bodyFont(ovUiFontFamily());
             bodyFont.setPixelSize(14);
             QLabel bodyProbe(QStringLiteral("Ag"));
             bodyProbe.setFont(bodyFont);
@@ -2468,7 +2500,7 @@ private:
             const int bodyLineH = bodyProbe.sizeHint().height();
 
             QFont linkFont = linkBtn->font();
-            linkFont.setFamily("Segoe UI");
+            linkFont.setFamily(ovUiFontFamily());
             linkFont.setPixelSize(14);
             linkBtn->setFont(linkFont);
             linkBtn->setFixedHeight(bodyLineH);
@@ -2476,7 +2508,7 @@ private:
 
             const QString url = linkUrl;
             connect(linkBtn, &QPushButton::clicked, this, [url]() {
-                QDesktopServices::openUrl(QUrl(url));
+                ovOpenWebUrl(url);
             });
             auto* linkRow = new QHBoxLayout();
             linkRow->setContentsMargins(0, 0, 0, 0);
@@ -2494,14 +2526,14 @@ private:
                 linkBtn2->installEventFilter(this);
                 linkBtn2->setStyleSheet(linkBtn->styleSheet());
                 QFont linkFont2 = linkBtn2->font();
-                linkFont2.setFamily("Segoe UI");
+                linkFont2.setFamily(ovUiFontFamily());
                 linkFont2.setPixelSize(14);
                 linkBtn2->setFont(linkFont2);
                 linkBtn2->setFixedHeight(bodyLineH);
                 linkBtn2->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
                 const QString url2 = linkUrl2;
                 connect(linkBtn2, &QPushButton::clicked, this, [url2]() {
-                    QDesktopServices::openUrl(QUrl(url2));
+                    ovOpenWebUrl(url2);
                 });
                 linkRow->addSpacing(16);
                 linkRow->addWidget(linkBtn2);
@@ -2539,7 +2571,7 @@ private:
             auto* infoText = new QLabel(infoBarText, infoBar);
             infoText->setObjectName("micaInfoBarText");
             infoText->setWordWrap(true);
-            QFont infoTextFont(QStringLiteral("Segoe UI"));
+            QFont infoTextFont(ovUiFontFamily());
             infoTextFont.setPixelSize(14);
             infoText->setFont(infoTextFont);
             infoText->setStyleSheet(darkMode
@@ -2554,7 +2586,7 @@ private:
             icon->setText("i");
             icon->setAlignment(Qt::AlignCenter);
             icon->setFixedSize(iconSize, iconSize);
-            QFont iconFont(QStringLiteral("Segoe UI"));
+            QFont iconFont(ovUiFontFamily());
             iconFont.setPixelSize(iconFontPx);
             iconFont.setBold(true);
             icon->setFont(iconFont);
@@ -2628,7 +2660,7 @@ private:
             accentBtn->setAutoDefault(false);
 
             connect(accentBtn, &QPushButton::clicked, this, [this, accentUrl]() {
-                QDesktopServices::openUrl(QUrl(accentUrl));
+                ovOpenWebUrl(accentUrl);
                 accept();
             });
 
@@ -2705,32 +2737,36 @@ private:
         footerWidget->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         layout->addWidget(footerWidget);
 
+        // See ovUiFontFamily(): the sheets below name the font once, here.
+        const QString uiFam = QStringLiteral("\"%1\"").arg(ovUiFontFamily());
         if (darkMode) {
-            m_card->setStyleSheet(R"(
+            m_card->setStyleSheet(QString(R"(
                 #micaCard {
                     background-color: #202020;
                     border-top-left-radius: 8px; border-top-right-radius: 8px; border-bottom-left-radius: 0px; border-bottom-right-radius: 0px;
                 }
                 #micaTitle { color: #ffffff; font-family: "Segoe UI"; font-size: 20px; font-weight: 600; background: transparent; }
                 #micaBody  { color: rgba(255,255,255,0.78); font-family: "Segoe UI"; font-size: 14px; background: transparent; }
-            )");
+            )").replace(QLatin1String("\"Segoe UI\""), uiFam));
             setStyleSheet(QString(
                 "MicaDialog { background-color: #202020; border: 1px solid %1; border-radius: 8px; }"
                 "QPushButton#micaClose { font-family: \"Segoe UI\"; font-size: 14px; outline: none; }")
-                .arg(ovAccentBlend(QColor(0, 0, 0), QColor(0x20, 0x20, 0x20), 25.0 / 255.0)));
+                .arg(ovAccentBlend(QColor(0, 0, 0), QColor(0x20, 0x20, 0x20), 25.0 / 255.0))
+                .replace(QLatin1String("\"Segoe UI\""), uiFam));
         } else {
-            m_card->setStyleSheet(R"(
+            m_card->setStyleSheet(QString(R"(
                 #micaCard {
                     background-color: #FFFFFF;
                     border-top-left-radius: 8px; border-top-right-radius: 8px; border-bottom-left-radius: 0px; border-bottom-right-radius: 0px;
                 }
                 #micaTitle { color: #1a1a1a; font-family: "Segoe UI"; font-size: 20px; font-weight: 600; background: transparent; }
                 #micaBody  { color: rgba(0,0,0,0.78); font-family: "Segoe UI"; font-size: 14px; background: transparent; }
-            )");
+            )").replace(QLatin1String("\"Segoe UI\""), uiFam));
             setStyleSheet(QString(
                 "MicaDialog { background-color: #FFFFFF; border: 1px solid %1; border-radius: 8px; }"
                 "QPushButton#micaClose { font-family: \"Segoe UI\"; font-size: 14px; outline: none; }")
-                .arg(ovAccentBlend(QColor(0, 0, 0), QColor(255, 255, 255), 15.0 / 255.0)));
+                .arg(ovAccentBlend(QColor(0, 0, 0), QColor(255, 255, 255), 15.0 / 255.0))
+                .replace(QLatin1String("\"Segoe UI\""), uiFam));
         }
 
         m_focusRing = new FocusRing(this);
