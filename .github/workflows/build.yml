@@ -164,21 +164,21 @@ jobs:
           name: ${{ matrix.artifact }}
           path: build\OpenMTR.exe
 
-  # macOS is built differently from Windows: dynamically-linked official Qt
-  # release binaries (fetched with aqtinstall), bundled into the .app via
-  # macdeployqt, rather than a fully static Qt build. Trying to build Qt
-  # itself from source for macOS in CI (the way the Windows jobs do) would
-  # be far slower for comparatively little benefit, since macOS apps
-  # conventionally ship their dependencies bundled in the .app anyway.
+  # macOS now builds the same way as Windows: a static, feature-trimmed Qt
+  # compiled from source (flags in ci/qt-macos.conf, cached by their hash),
+  # linked straight into the executable. No macdeployqt, no bundled
+  # frameworks, no plugins to prune — the whole bundle is one binary, and
+  # CMakeLists.txt links the Cocoa platform plugin in statically. The
+  # trimmed feature set is the Windows list minus the QFileDialog cluster
+  # (see the .conf's own comment). TLS and network-information plugins are
+  # default static plugins, so Qt's CMake links them in automatically — the
+  # HTTPS update check keeps working.
   #
-  # Official binaries, NOT Homebrew's qt, for two hard reasons:
-  #  * Homebrew compiles for the runner's own OS release, so the bundle
-  #    silently required the newest macOS (its libicuuc was minos 26.0)
-  #    while Info.plist promised 12.0 — the app launched on the build
-  #    machine and was killed by dyld everywhere else.
-  #  * Homebrew's Qt links ICU (libicudata alone is 32 MB), glib and dbus;
-  #    official Qt macOS binaries carry none of those, which is most of the
-  #    difference between a ~30 MB and a single-digit-MB DMG.
+  # Earlier iterations used Homebrew's Qt (compiled for the runner's own OS
+  # release — bundles silently required the newest macOS while declaring
+  # 12.0 — plus 35 MB of ICU/glib/dbus) and then official dynamic binaries
+  # (correct, but ~22 MB of frameworks for the ~10 MB DMG). Static-trimmed
+  # is the same approach that keeps Windows below 8 MB.
   build-macos:
     runs-on: macos-latest
     name: Build (macOS ARM64)
@@ -194,68 +194,79 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install Qt (official binaries)
-        uses: jurplel/install-qt-action@v4
+      - name: Restore Qt cache
+        id: qt-cache
+        uses: actions/cache@v6
         with:
-          version: ${{ env.QT_VERSION }}
-          cache: true
-          cache-key-prefix: qt-official-macos-arm64
+          path: ~/qt-macos-static
+          key: qt-static-macos-arm64-${{ env.QT_VERSION }}-${{ hashFiles('ci/qt-macos.conf') }}
 
       - name: Ensure Ninja
         run: command -v ninja >/dev/null || brew install ninja
+
+      - name: Fetch Qt source
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: |
+          # Series (6.11) derived from QT_VERSION (6.11.1) — see the Windows
+          # job for why it isn't written out a second time.
+          series="${QT_VERSION%.*}"
+          base="https://download.qt.io/official_releases/qt/$series/${QT_VERSION}/submodules"
+          curl -sfL --retry 3 -o qtbase.tar.xz \
+            "$base/qtbase-everywhere-src-${QT_VERSION}.tar.xz"
+          tar xf qtbase.tar.xz
+
+      - name: Configure, build & install Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: |
+          # Flags come from ci/qt-macos.conf, which the cache key hashes.
+          # awk 'NF{...}': see the Linux job for why not sed with \s.
+          # while-read, not mapfile: macOS runners execute run: steps with
+          # Apple's bash 3.2, which predates mapfile (a bash 4 builtin).
+          QT_FLAGS=()
+          while IFS= read -r flag; do QT_FLAGS+=("$flag"); done \
+            < <(sed 's/#.*//' "$GITHUB_WORKSPACE/ci/qt-macos.conf" \
+                | tr -d '\r' | awk 'NF{$1=$1; print}')
+          echo "Qt flags: ${QT_FLAGS[*]}"
+          cd "qtbase-everywhere-src-${QT_VERSION}"
+          # The deployment target must match the app's (CMakeLists.txt):
+          # static Qt objects compiled for a newer macOS would silently
+          # raise the real minimum above what Info.plist declares — the
+          # smoke test and minos check below both guard the result.
+          ./configure -prefix "$HOME/qt-macos-static" "${QT_FLAGS[@]}" \
+            -- -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -B "$HOME/qt-build"
+          cmake --build "$HOME/qt-build" --parallel
+          cmake --install "$HOME/qt-build" --strip
 
       - name: Configure & build
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
+            -DCMAKE_PREFIX_PATH="$HOME/qt-macos-static"
           cmake --build build --parallel
 
-      - name: Bundle Qt frameworks into the app
-        run: macdeployqt build/OpenMTR.app -always-overwrite
+      - name: Ad-hoc sign
+        # One binary, no nested code — a single codesign is the whole
+        # inside-out order now.
+        run: codesign --force --sign - build/OpenMTR.app
 
-      - name: Thin universal Qt libraries to arm64
-        # Official Qt dylibs are universal (x86_64 + arm64); the app itself
-        # is arm64-only (see CMAKE_OSX_ARCHITECTURES), so the x86_64 halves
-        # are dead weight — roughly half of every bundled library.
+      - name: Smoke-test the bundle actually launches
+        # The exact failure users report ("it crashed on my Mac") never
+        # showed up in CI because nothing here ever ran the app. macOS
+        # runners have a real Aqua session, so launch the bundle and require
+        # it to still be alive after 8 s — that catches dyld kills, missing
+        # plugins, unrecognized-selector aborts, anything that dies at
+        # startup. Only on the runner's own macOS, so not proof against
+        # other releases, but strictly better than never executing it.
         run: |
-          find build/OpenMTR.app -type f | while IFS= read -r f; do
-            if lipo -archs "$f" 2>/dev/null | grep -q 'x86_64'; then
-              lipo "$f" -thin arm64 -output "$f"
-            fi
-          done
-
-      - name: Drop plugins the app never loads
-        # macdeployqt bundles every plugin its Qt modules could possibly
-        # want, not the ones this app uses. Pruned before signing so the
-        # signature covers what actually ships.
-        #   imageformats — the only image the app decodes is the qrc'd
-        #     app_icon.png, and PNG support is built into QtGui itself; the
-        #     gif/ico/jpeg plugins are pure weight.
-        #   iconengines  — libqsvgicon is the sole entry and nothing here
-        #     loads an SVG, which also orphans the QtSvg framework.
-        # Kept deliberately: platforms (libqcocoa, mandatory), styles
-        # (libqmacstyle, the native look) and tls/networkinformation — the
-        # update check talks HTTPS to api.github.com and silently fails
-        # without a TLS backend.
-        run: |
-          rm -rf build/OpenMTR.app/Contents/PlugIns/imageformats
-          rm -rf build/OpenMTR.app/Contents/PlugIns/iconengines
-          rm -rf build/OpenMTR.app/Contents/Frameworks/QtSvg.framework
-          echo "Remaining plugins:"
-          find build/OpenMTR.app/Contents/PlugIns -name '*.dylib' | sort
-
-      - name: Ad-hoc sign (inside-out)
-        run: |
-          # Thinning above invalidated the existing signatures. Re-sign
-          # nested code first, then the bundle: codesign --deep is
-          # deprecated and signs in an order Gatekeeper may reject.
-          find build/OpenMTR.app/Contents/Frameworks \
-               build/OpenMTR.app/Contents/PlugIns \
-               -type f -print0 | while IFS= read -r -d '' f; do
-            file -b "$f" | grep -q 'Mach-O' && codesign --force --sign - "$f"
-          done
-          codesign --force --sign - build/OpenMTR.app
+          ./build/OpenMTR.app/Contents/MacOS/OpenMTR & app_pid=$!
+          sleep 8
+          if ! kill -0 "$app_pid" 2>/dev/null; then
+            wait "$app_pid"; code=$?
+            echo "::error::App exited within 8 s of launch (exit $code)"
+            exit 1
+          fi
+          kill "$app_pid"
+          echo "App survived launch."
 
       - name: Verify every bundled binary runs on the declared minimum OS
         # The exact regression this job used to ship: a bundle whose
@@ -310,6 +321,7 @@ jobs:
           # step with the template.
           create-dmg \
             --volname "OpenMTR" \
+            --volicon build/app_icon.icns \
             --window-pos 200 120 \
             --window-size 600 400 \
             --icon-size 128 \
