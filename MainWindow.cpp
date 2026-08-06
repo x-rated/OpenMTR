@@ -426,8 +426,10 @@ unsigned MainWindow::getPingSize() const noexcept { return static_cast<unsigned>
 //   kind of false-positive detection on this binary.
 //
 // Fires once, shortly after startup; failures (offline, GitHub down,
-// unexpected response shape) are silently ignored — this is a courtesy
-// notice, not something the app should ever block or nag on.
+// unexpected response shape) are silently ignored. When a newer release
+// is found, a standalone "Update available" notice (showUpdateDialog())
+// is opened right away instead of leaving the user to notice the toolbar
+// badge on their own.
 void MainWindow::checkForUpdates()
 {
     if (!m_updateNam) m_updateNam = new QNetworkAccessManager(this);
@@ -467,6 +469,7 @@ void MainWindow::checkForUpdates()
         m_updateVersion    = tag;
         m_updateReleaseUrl = htmlUrl;
         if (m_updateBadge) m_updateBadge->show();
+        showUpdateDialog();
     });
 }
 
@@ -1334,6 +1337,27 @@ void MainWindow::showAboutDialog()
         m_updateAvailable ? QString("Version %1 is available — update to get the latest features and fixes.")
                                  .arg(m_updateVersion)
                            : QString());
+}
+
+// Standalone "Update available" notice, shown automatically the moment
+// checkForUpdates() finds a newer release. Separate from the inline update
+// section inside showAboutDialog() above, which stays available afterwards
+// (via the ⓘ toolbar button) for anyone who dismisses this and wants to
+// come back to it later.
+void MainWindow::showUpdateDialog()
+{
+    const QString msg = QString(
+            "OpenMTR %1 is available — you're running %2.\n\n"
+            "Download the new version from GitHub to get the latest features and fixes.")
+        .arg(m_updateVersion)
+        .arg(QStringLiteral(OPENMTR_VERSION));
+
+    MicaDialog::show(this,
+        "Update available",
+        msg,
+        m_darkMode,
+        QString(), QString(), QString(), QString(),
+        m_updateReleaseUrl, QStringLiteral("Download"));
 }
 
 #ifdef Q_OS_MAC

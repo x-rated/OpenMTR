@@ -2210,6 +2210,7 @@ private:
     void    applyLightTheme();
     void    updateAppIcon();
     void    showAboutDialog();
+    void    showUpdateDialog();
     // One-shot GitHub release check (see MainWindow.cpp for the network
     // capability trade-off this reintroduces). No-op if it can't reach
     // the network or the response doesn't parse as expected.
