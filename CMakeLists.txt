@@ -48,6 +48,11 @@ endif()
 include_directories("${CMAKE_CURRENT_BINARY_DIR}")
 
 # ---- Dependencies ----------------------------------------------------------
+# Network: the one-shot GitHub release check (MainWindow::checkForUpdates()).
+# Statically linking this pulls in WinHTTP/Schannel/Crypt32 on Windows and
+# gives the binary a network+TLS capability profile that AV heuristics can
+# associate with downloader/C2 behaviour - see the comment above
+# MainWindow::checkForUpdates() for the fuller trade-off.
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
 
 # DBus is Linux-only: used to watch org.freedesktop.portal.Settings for live
@@ -57,7 +62,7 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
 # Qt's own QStyleHints::colorSchemeChanged is unreliable on several
 # distros/desktop environments (notably GNOME) - it may never fire at all
 # even though the OS setting does change. Ships as part of the same qt6-base
-# source package as Widgets/Network, so no extra apt package is needed in CI.
+# source package as Widgets, so no extra apt package is needed in CI.
 if(UNIX AND NOT APPLE)
     find_package(Qt6 REQUIRED COMPONENTS DBus)
 

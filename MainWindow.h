@@ -40,6 +40,9 @@
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QMenu>
+#include <QtNetwork/QNetworkAccessManager>
+#include <QtNetwork/QNetworkReply>
+#include <QtNetwork/QNetworkRequest>
 #include <QtGui/QCursor>
 #include <QtGui/QScreen>
 #include <QtGui/QGuiApplication>
@@ -84,11 +87,6 @@
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 
-// Qt — network (GitHub release version checker).
-#include <QtNetwork/QNetworkAccessManager>
-#include <QtNetwork/QNetworkRequest>
-#include <QtNetwork/QNetworkReply>
-#include <QtNetwork/QNetworkProxy>
 
 #ifdef Q_OS_LINUX
 // Qt — DBus (live light/dark and accent-colour watching, plus a one-shot
@@ -2212,6 +2210,10 @@ private:
     void    applyLightTheme();
     void    updateAppIcon();
     void    showAboutDialog();
+    // One-shot GitHub release check (see MainWindow.cpp for the network
+    // capability trade-off this reintroduces). No-op if it can't reach
+    // the network or the response doesn't parse as expected.
+    void    checkForUpdates();
 #ifdef Q_OS_MAC
     void    installMacMenuBar();
     // Recompute the menu-bar actions' enabled state from the toolbar
@@ -2237,8 +2239,6 @@ private:
     static bool    isWindowsDarkMode();
     static QString lookupASN(const QString& ip, bool ipv6);
     QString        getCachedASN(const QString& ip, bool ipv6) const;
-    void           checkForUpdates();
-    static bool    isNewerVersion(const QString& latest, const QString& current);
     void           updateToolbarResponsiveLayout();
     bool           alignTargetEditToLossBar();
     void           scheduleButtonAlignment(int attemptsLeft = 30);
@@ -2283,6 +2283,7 @@ private:
     bool            m_updateAvailable = false;
     QString         m_updateVersion;
     QString         m_updateReleaseUrl;
+    QNetworkAccessManager* m_updateNam = nullptr;
     QTimer          m_iconTipTimer;
     // Restores the Copy button's label after its "Copied" confirmation.
     QTimer          m_copyFeedbackTimer;

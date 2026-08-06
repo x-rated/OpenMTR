@@ -16,6 +16,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QVersionNumber>
 #include "version.h"
 #include "tracer.h"
 
@@ -362,12 +363,9 @@ MainWindow::MainWindow(QWidget* parent)
     });
     m_targetEdit->setFocus();
 
-    // Delayed 5s after startup rather than called immediately: an outbound
-    // network request fired the instant the window appears reads as
-    // startup "phone home" behaviour to AV heuristics; a short delay after
-    // the UI has settled is a less conspicuous pattern for the exact same
-    // one-shot-per-launch check.
-    QTimer::singleShot(5000, this, &MainWindow::checkForUpdates);
+    // Give the window a moment to finish showing before doing any network
+    // I/O — same rationale as the frameless-style timer above.
+    QTimer::singleShot(1500, this, &MainWindow::checkForUpdates);
 
 #ifndef Q_OS_MAC
     auto* scCopy   = new QShortcut(QKeySequence::Copy, this);
@@ -416,91 +414,59 @@ unsigned MainWindow::getPingSize() const noexcept { return static_cast<unsigned>
 //  Update checker
 // ==========================================================================
 
-// Compares two "major.minor.patch"-style version strings (a leading 'v', if
-// any, is expected to already be stripped by the caller). Missing components
-// default to 0, so "1.2" and "1.2.0" compare equal. Returns true only if
-// `latest` is strictly newer than `current`.
-bool MainWindow::isNewerVersion(const QString& latest, const QString& current)
-{
-    const auto toParts = [](const QString& v) {
-        std::array<int, 3> parts{0, 0, 0};
-        const QStringList segments = v.split('.');
-        for (int i = 0; i < segments.size() && i < 3; ++i)
-            parts[static_cast<size_t>(i)] = segments[i].toInt();
-        return parts;
-    };
-
-    const auto a = toParts(latest);
-    const auto b = toParts(current);
-    for (int i = 0; i < 3; ++i) {
-        if (a[static_cast<size_t>(i)] != b[static_cast<size_t>(i)])
-            return a[static_cast<size_t>(i)] > b[static_cast<size_t>(i)];
-    }
-    return false;
-}
-
-// Asks the GitHub API for the latest release and, if it's newer than the
-// running build, shows the same Mica dialog used elsewhere in the app with
-// a link to the release page. Runs once per launch; any failure (offline,
-// rate-limited, malformed response, ...) is swallowed quietly, since a
-// version check is a nice-to-have and never something worth interrupting
-// the user over.
+// One-shot check against the GitHub Releases API. Reintroduced at the
+// user's explicit request after previously being removed for the exact
+// reason noted below — kept here so the trade-off stays visible instead
+// of silently disappearing back into a comment:
+//
+//   Statically linking Qt6Network (WinHTTP/Schannel/Crypt32 imports)
+//   purely for a "nice to have" version check gives Windows binaries a
+//   network+TLS capability profile that AV heuristics associate with
+//   downloader/C2 behaviour, and has previously triggered exactly that
+//   kind of false-positive detection on this binary.
+//
+// Fires once, shortly after startup; failures (offline, GitHub down,
+// unexpected response shape) are silently ignored — this is a courtesy
+// notice, not something the app should ever block or nag on.
 void MainWindow::checkForUpdates()
 {
-    auto* manager = new QNetworkAccessManager(this);
-    // On Windows, QNetworkAccessManager's default proxy setting makes it
-    // consult the system proxy configuration via WinHTTP on the very first
-    // request. That lookup runs synchronously on the calling (GUI) thread
-    // and can take several seconds on a first launch, which is exactly the
-    // freeze-then-recover behaviour seen at startup. Since this is a single
-    // plain HTTPS GET to a public API, opting out of proxy auto-detection
-    // avoids the stall entirely.
-    manager->setProxy(QNetworkProxy(QNetworkProxy::NoProxy));
+    if (!m_updateNam) m_updateNam = new QNetworkAccessManager(this);
 
-    QNetworkRequest request(QUrl("https://api.github.com/repos/x-rated/OpenMTR/releases/latest"));
-    // The GitHub API rejects requests with no User-Agent header.
-    request.setHeader(QNetworkRequest::UserAgentHeader,
-                       QByteArray("OpenMTR/") + OPENMTR_VERSION);
-    request.setRawHeader("Accept", "application/vnd.github+json");
+    QNetworkRequest req(QUrl(QStringLiteral(
+        "https://api.github.com/repos/x-rated/OpenMTR/releases/latest")));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("OpenMTR"));
+    req.setRawHeader("Accept", "application/vnd.github+json");
 
-    QNetworkReply* reply = manager->get(request);
+    QNetworkReply* reply = m_updateNam->get(req);
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError)
-            return;
+        if (reply->error() != QNetworkReply::NoError) return;
 
-        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
-        if (!doc.isObject())
-            return;
+        const auto doc = QJsonDocument::fromJson(reply->readAll());
+        if (!doc.isObject()) return;
         const QJsonObject obj = doc.object();
 
-        QString tag = obj.value("tag_name").toString();
-        if (tag.isEmpty())
-            return;
-        if (tag.startsWith('v', Qt::CaseInsensitive))
-            tag.remove(0, 1);
-
-        if (!isNewerVersion(tag, OPENMTR_VERSION))
+        QString tag = obj.value(QStringLiteral("tag_name")).toString();
+        if (tag.startsWith(QLatin1Char('v'))) tag.remove(0, 1);
+        if (tag.isEmpty() || obj.value(QStringLiteral("draft")).toBool()
+                           || obj.value(QStringLiteral("prerelease")).toBool())
             return;
 
-        const QString releaseUrl = obj.value("html_url").toString();
+        const QVersionNumber latest  = QVersionNumber::fromString(tag);
+        const QVersionNumber current = QVersionNumber::fromString(
+            QStringLiteral(OPENMTR_VERSION));
+        if (latest.isNull() || latest <= current) return;
 
-        m_updateAvailable = true;
-        m_updateVersion = tag;
-        m_updateReleaseUrl = releaseUrl.isEmpty()
-            ? QStringLiteral("https://github.com/x-rated/OpenMTR/releases/latest")
-            : releaseUrl;
+        const QString htmlUrl = obj.value(QStringLiteral("html_url")).toString();
+        // Belt-and-braces even though ovOpenWebUrl() already refuses
+        // anything but http/https before ever calling QDesktopServices.
+        if (!htmlUrl.startsWith(QLatin1String("https://github.com/")))
+            return;
+
+        m_updateAvailable  = true;
+        m_updateVersion    = tag;
+        m_updateReleaseUrl = htmlUrl;
         if (m_updateBadge) m_updateBadge->show();
-
-        MicaDialog::show(this,
-            "Update available",
-            QString("OpenMTR %1 is available — you're running %2.\n\n"
-                    "Download the new version from GitHub to get the latest features and fixes.")
-                .arg(tag, OPENMTR_VERSION),
-            m_darkMode,
-            QString(), QString(), QString(), QString(),
-            m_updateReleaseUrl,
-            "Download");
     });
 }
 
