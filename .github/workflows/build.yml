@@ -158,6 +158,31 @@ jobs:
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded && ^
           cmake --build build --parallel
 
+      - name: Verify Control Flow Guard is set in the binary
+        # CFG (/guard:cf + /GUARD:CF in CMakeLists.txt) is what tells AV ML
+        # classifiers "this was built with a standard exploit mitigation
+        # enabled", which measurably cuts false-positive Wacatac-style
+        # detections. It's possible for the compile/link flags to be right
+        # in CMakeLists.txt but for the resulting PE to not actually carry
+        # the bit - e.g. a linker/toolset mismatch on a cross-compiled
+        # target silently drops it. dumpbin ships with the dev tools that
+        # setup-msvc-dev already put on PATH, so this needs nothing extra
+        # installed. Fail loudly rather than ship a binary we assumed was
+        # hardened but wasn't.
+        shell: pwsh
+        run: |
+          # dumpbin /headers never prints the string "Guard Control Flow Guard" -
+          # a CFG binary's DLL characteristics just list the bare word "Guard".
+          # /loadconfig is the reliable check: it confirms the guard tables
+          # themselves are present, not just a characteristics-flag substring.
+          $loadconfig = dumpbin /loadconfig build\OpenMTR.exe
+          if ($loadconfig -match 'CF Instrumented' -and $loadconfig -match 'FID table present') {
+            Write-Host "Control Flow Guard confirmed present in build\OpenMTR.exe"
+          } else {
+            Write-Error "Control Flow Guard bit is MISSING from build\OpenMTR.exe - /guard:cf/GUARD:CF did not take effect for this target"
+            exit 1
+          }
+
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
@@ -515,7 +540,7 @@ jobs:
             --icon-file app_icon.png
 
       - name: Rename artifact
-        run: mv OpenMTR*.AppImage OpenMTR-${{ matrix.arch }}.AppImage
+        run: mv OpenMTR*.AppImage OpenMTR.AppImage
 
       - name: Verify the AppImage ships no ICU
         # linuxdeploy pulls in whatever the binaries link against, so a Qt
@@ -523,17 +548,17 @@ jobs:
         # apt Qt winning the lookup) would silently put ~11 MB back. Cheap
         # to assert, and the failure names the cause.
         run: |
-          ./OpenMTR-${{ matrix.arch }}.AppImage --appimage-extract >/dev/null
+          ./OpenMTR.AppImage --appimage-extract >/dev/null
           if find squashfs-root -name 'libicu*' | grep -q .; then
             echo "::error::AppImage contains ICU — the Qt it bundled was not the -no-icu build."
             find squashfs-root -name 'libicu*'
             exit 1
           fi
-          du -sh OpenMTR-${{ matrix.arch }}.AppImage
+          du -sh OpenMTR.AppImage
           rm -rf squashfs-root
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}
-          path: OpenMTR-${{ matrix.arch }}.AppImage
+          path: OpenMTR.AppImage
