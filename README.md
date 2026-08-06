@@ -140,3 +140,12 @@ OpenMTR — the whole application, including this README — is built with [Clau
 GPL v2 — see [LICENSE](LICENSE).
 
 The network engine is derived from WinMTR Redux and original WinMTR, both GPL v2.
+
+---
+
+## Support
+
+If OpenMTR has been useful to you, consider supporting its development — thank you! 💙
+
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20me-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/slamb)
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-x--rated-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/x-rated)
