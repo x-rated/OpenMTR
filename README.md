@@ -2,7 +2,7 @@
 
 A modern, lightweight network diagnostic tool that combines traceroute and ping into a single real-time view. Built with a clean Qt6 interface, runs on Windows, macOS and Linux.
 
-![OpenMTR Screenshot](https://i.imgur.com/1Qqgne8.jpg)
+![OpenMTR Screenshot](https://i.imgur.com/wQczBav.png)
 ```
 OpenMTR Export
 Target  : gov.bw
