@@ -499,12 +499,6 @@ jobs:
       - name: Install into AppDir
         run: cmake --install build --prefix AppDir/usr
 
-      - name: Find what pulls in ICU
-        run: |
-          for f in $(find AppDir -name '*.so*'); do
-            readelf -d "$f" 2>/dev/null | grep -q 'NEEDED.*libicu' && echo "$f linkuje ICU"
-          done
-
       - name: Fetch linuxdeploy & its Qt plugin
         run: |
           base="https://github.com/linuxdeploy"
