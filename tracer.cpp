@@ -49,8 +49,10 @@ inline ULONGLONG GetTickCount64()
 // ==========================================================================
 
 struct DnsResolverArgs {
-    OpenMTRNet* net;
-    int        index;
+    // Shared ownership, not a raw OpenMTRNet* — the engine can be destroyed
+    // while this worker is still blocked in getnameinfo(). See DnsSink.
+    std::shared_ptr<DnsSink> sink;
+    int                      index;
 };
 
 // DNS resolution still runs on its own short-lived worker thread (unrelated
@@ -71,6 +73,9 @@ OpenMTRNet::OpenMTRNet(const OpenMTROptions& options)
 {
     memset(m_hops, 0, sizeof(m_hops));
     memset(&last_remote_addr6, 0, sizeof(last_remote_addr6));
+
+    // Publish ourselves to the reverse-DNS workers; ~OpenMTRNet takes it back.
+    m_dnsSink->net = this;
 
 #ifdef _WIN32
     hICMP = IcmpCreateFile();
@@ -115,6 +120,15 @@ OpenMTRNet::OpenMTRNet(const OpenMTROptions& options)
 // Close whatever ICMP handles we opened.
 OpenMTRNet::~OpenMTRNet()
 {
+    // Cut the reverse-DNS workers loose before anything else is torn down:
+    // past this point a worker finding a null `net` drops its result instead
+    // of writing into freed memory. Blocks only for an in-flight
+    // GetAddr()/SetName() call, never for the resolver itself.
+    {
+        std::lock_guard<std::mutex> lock(m_dnsSink->mutex);
+        m_dnsSink->net = nullptr;
+    }
+
 #ifdef _WIN32
     if (initialized) {
         if (hasIPv6 && hICMP6 != INVALID_HANDLE_VALUE)
@@ -1063,30 +1077,47 @@ void OpenMTRNet::StopTrace()
 // reverse-DNS name if DNS lookups are enabled.
 static void DnsResolverThread(void* p)
 {
-    auto* args     = (DnsResolverArgs*)p;
-    OpenMTRNet* net = args->net;
+    std::unique_ptr<DnsResolverArgs> args(static_cast<DnsResolverArgs*>(p));
+    DnsSink& sink = *args->sink;
     char hostname[NI_MAXHOST];
 
-    // Thread-safe copy of the hop's address (see OpenMTRNet::GetAddr). The
-    // sockaddr length passed to getnameinfo must match the address family —
-    // passing the larger sockaddr_in6 size for a v4 hop would be a
+    // Read everything needed for the lookup in one locked step, then let go
+    // of the sink: the engine must stay destructible while getnameinfo()
+    // blocks, which on a hop with no PTR record can be many seconds.
+    SOCKADDR_INET addr{};
+    bool          wantDns = false;
+    {
+        std::lock_guard<std::mutex> lock(sink.mutex);
+        if (!sink.net)
+            return;                       // engine already gone
+        // Thread-safe copy of the hop's address (see OpenMTRNet::GetAddr).
+        addr    = sink.net->GetAddr(args->index);
+        wantDns = sink.net->opts.useDNS;
+    }
+
+    // The sockaddr length passed to getnameinfo must match the address
+    // family — passing the larger sockaddr_in6 size for a v4 hop would be a
     // family/length mismatch that can make the lookup fail silently.
-    SOCKADDR_INET addr  = net->GetAddr(args->index);
-    const bool    isV6  = (addr.Ipv6.sin6_family == AF_INET6);
-    sockaddr*     sa    = isV6 ? (sockaddr*)&addr.Ipv6 : (sockaddr*)&addr.Ipv4;
-    socklen_t     salen = isV6 ? sizeof(sockaddr_in6)  : sizeof(sockaddr_in);
+    const bool isV6  = (addr.Ipv6.sin6_family == AF_INET6);
+    sockaddr*  sa    = isV6 ? (sockaddr*)&addr.Ipv6 : (sockaddr*)&addr.Ipv4;
+    socklen_t  salen = isV6 ? sizeof(sockaddr_in6)  : sizeof(sockaddr_in);
 
-    if (!getnameinfo(sa, salen, hostname, NI_MAXHOST, nullptr, 0, NI_NUMERICHOST)) {
-        net->SetName(args->index, hostname);
+    // Store a result only if the engine is still alive; re-checked for each
+    // write, since the numeric and the PTR lookup are separated by the slow
+    // resolver call.
+    const auto publish = [&sink, &args](const char* name) {
+        std::lock_guard<std::mutex> lock(sink.mutex);
+        if (sink.net)
+            sink.net->SetName(args->index, const_cast<char*>(name));
+    };
+
+    if (!getnameinfo(sa, salen, hostname, NI_MAXHOST, nullptr, 0, NI_NUMERICHOST))
+        publish(hostname);
+
+    if (wantDns) {
+        if (!getnameinfo(sa, salen, hostname, NI_MAXHOST, nullptr, 0, 0))
+            publish(hostname);
     }
-
-    if (net->opts.useDNS) {
-        if (!getnameinfo(sa, salen, hostname, NI_MAXHOST, nullptr, 0, 0)) {
-            net->SetName(args->index, hostname);
-        }
-    }
-
-    delete args;
 }
 
 // ==========================================================================
@@ -1231,7 +1262,7 @@ void OpenMTRNet::SetAddr(int at, u_long addr)
         m_hops[at].addr.sin_addr.s_addr = addr;
         auto* args  = new DnsResolverArgs;
         args->index = at;
-        args->net   = this;
+        args->sink  = m_dnsSink;
 #ifdef _WIN32
         if (_beginthread(DnsResolverThread, 0, args) == static_cast<uintptr_t>(-1))
             delete args;
@@ -1268,7 +1299,7 @@ void OpenMTRNet::SetAddr6(int at, IPV6_ADDRESS_EX addrex)
             m_hops[at].addr6.sin6_addr.u.Word[i] = addrex.sin6_addr[i];
         auto* args  = new DnsResolverArgs;
         args->index = at;
-        args->net   = this;
+        args->sink  = m_dnsSink;
         if (_beginthread(DnsResolverThread, 0, args) == static_cast<uintptr_t>(-1))
             delete args;
     }
@@ -1296,7 +1327,7 @@ void OpenMTRNet::SetAddr6(int at, IPV6_ADDRESS_EX addrex)
         std::memcpy(&m_hops[at].addr6.sin6_addr, &addrex.sin6_addr, 16);
         auto* args  = new DnsResolverArgs;
         args->index = at;
-        args->net   = this;
+        args->sink  = m_dnsSink;
         std::thread([args]() { DnsResolverThread(args); }).detach();
     }
 #endif
