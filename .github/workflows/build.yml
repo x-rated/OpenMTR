@@ -131,7 +131,7 @@ jobs:
         if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          foreach ($module in @('QtWidgets', 'QtGui', 'QtCore', 'QtNetwork')) {
+          foreach ($module in @('QtWidgets', 'QtGui', 'QtCore')) {
             $dir = "C:\Qt-static\include\$module"
             if (-not (Test-Path $dir)) { continue }
             foreach ($h in Get-ChildItem $dir -Filter "q*.h") {
@@ -195,9 +195,8 @@ jobs:
   # frameworks, no plugins to prune — the whole bundle is one binary, and
   # CMakeLists.txt links the Cocoa platform plugin in statically. The
   # trimmed feature set is the Windows list minus the QFileDialog cluster
-  # (see the .conf's own comment). TLS and network-information plugins are
-  # default static plugins, so Qt's CMake links them in automatically — the
-  # HTTPS update check keeps working.
+  # (see the .conf's own comment). Qt6Network isn't linked at all — the
+  # update check shells out to /usr/bin/curl instead (see MainWindow.cpp).
   #
   # Earlier iterations used Homebrew's Qt (compiled for the runner's own OS
   # release — bundles silently required the newest macOS while declaring
