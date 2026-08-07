@@ -217,26 +217,6 @@ struct HopRecord {
 //  OpenMTRNet — low-level ICMP engine
 // ==========================================================================
 
-class OpenMTRNet;
-
-// Lifetime channel between an OpenMTRNet and the reverse-DNS workers it
-// starts. Those workers are detached and outlive nothing in particular: a
-// getnameinfo() call on a hop with no PTR record blocks for as long as the
-// resolver takes, and the user can stop the trace (destroying the engine)
-// meanwhile — so a worker holding a plain OpenMTRNet* would write its result
-// into freed memory.
-//
-// The sink is owned jointly (shared_ptr) by the engine and every worker it
-// started, so it always outlives them; ~OpenMTRNet clears `net` under the
-// mutex, and a worker that finds it null simply drops its result. Only the
-// pointer hand-off is serialized here — the slow lookup itself runs outside
-// the lock, so the destructor never waits on the resolver, just on whatever
-// short SetName()/GetAddr() call may be in flight.
-struct DnsSink {
-    std::mutex  mutex;
-    OpenMTRNet* net = nullptr;
-};
-
 // Low-level traceroute engine. DoTrace() runs a single async dispatch loop
 // that repeatedly pings every hop and feeds results back through the
 // thread-safe accessors/mutators below (all serialized by m_mutex).
@@ -348,9 +328,6 @@ private:
 #else
     int m_stopPipe[2] = {-1, -1};
 #endif
-
-    // Shared with the detached reverse-DNS workers — see DnsSink above.
-    std::shared_ptr<DnsSink> m_dnsSink = std::make_shared<DnsSink>();
 
     int RecalcMaxLocked();
 };

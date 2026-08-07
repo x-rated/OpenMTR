@@ -49,50 +49,13 @@ inline ULONGLONG GetTickCount64()
 // ==========================================================================
 
 struct DnsResolverArgs {
-    // Shared ownership, not a raw OpenMTRNet* — the engine can be destroyed
-    // while this worker is still blocked in getnameinfo(). See DnsSink.
-    std::shared_ptr<DnsSink> sink;
-    int                      index;
+    OpenMTRNet* net;
+    int        index;
 };
 
 // DNS resolution still runs on its own short-lived worker thread (unrelated
 // to probe scheduling). Declared here so the Set* mutators can launch it.
 static void DnsResolverThread(void* p);
-
-#ifndef _WIN32
-// Translate an ICMPv6 error into the IP_* status the rest of the engine and
-// the UI already speak (SetErrorName turns these into the strings shown in
-// the Hostname column). Every v6 error used to collapse into
-// "Destination host unreachable", which hid the two that actually tell you
-// something: Packet Too Big means the path MTU is smaller than the probe —
-// nothing to do with reachability — and the unreachable codes distinguish a
-// missing route from an administrative block.
-//
-// RFC 4443 numbering: type 1 = Destination Unreachable (code 0 no route,
-// 1 administratively prohibited, 2 beyond scope, 3 address unreachable,
-// 4 port unreachable), type 2 = Packet Too Big (a type of its own, not a
-// code under type 1), type 4 = Parameter Problem.
-static DWORD Icmp6StatusFor(uint8_t type, uint8_t code)
-{
-    switch (type) {
-    case ICMP6_PACKET_TOO_BIG:
-        return IP_PACKET_TOO_BIG;
-    case ICMP6_PARAM_PROB:
-        return IP_PARAM_PROBLEM;
-    case ICMP6_DST_UNREACH:
-        switch (code) {
-        case ICMP6_DST_UNREACH_NOROUTE:     return IP_DEST_NET_UNREACHABLE;
-        case ICMP6_DST_UNREACH_ADMIN:       return IP_BAD_ROUTE;
-        case ICMP6_DST_UNREACH_BEYONDSCOPE: return IP_DEST_NET_UNREACHABLE;
-        case ICMP6_DST_UNREACH_ADDR:        return IP_DEST_HOST_UNREACHABLE;
-        case ICMP6_DST_UNREACH_NOPORT:      return IP_DEST_PORT_UNREACHABLE;
-        default:                            return IP_DEST_HOST_UNREACHABLE;
-        }
-    default:
-        return IP_GENERAL_FAILURE;
-    }
-}
-#endif
 
 
 // ==========================================================================
@@ -108,9 +71,6 @@ OpenMTRNet::OpenMTRNet(const OpenMTROptions& options)
 {
     memset(m_hops, 0, sizeof(m_hops));
     memset(&last_remote_addr6, 0, sizeof(last_remote_addr6));
-
-    // Publish ourselves to the reverse-DNS workers; ~OpenMTRNet takes it back.
-    m_dnsSink->net = this;
 
 #ifdef _WIN32
     hICMP = IcmpCreateFile();
@@ -146,16 +106,7 @@ OpenMTRNet::OpenMTRNet(const OpenMTROptions& options)
         m_stopPipe[1] = -1;
         return;
     }
-    // Non-blocking matters on the read end: DoTrace() drains stale wake-ups
-    // with a read() loop that runs before any data exists, so a blocking
-    // pipe would park the trace there forever instead of starting it.
-    if (fcntl(m_stopPipe[0], F_SETFL, O_NONBLOCK) < 0) {
-        ::close(m_stopPipe[0]);
-        ::close(m_stopPipe[1]);
-        m_stopPipe[0] = -1;
-        m_stopPipe[1] = -1;
-        return;                       // leaves initialized false
-    }
+    fcntl(m_stopPipe[0], F_SETFL, O_NONBLOCK);
 #endif
 
     initialized = true;
@@ -164,15 +115,6 @@ OpenMTRNet::OpenMTRNet(const OpenMTROptions& options)
 // Close whatever ICMP handles we opened.
 OpenMTRNet::~OpenMTRNet()
 {
-    // Cut the reverse-DNS workers loose before anything else is torn down:
-    // past this point a worker finding a null `net` drops its result instead
-    // of writing into freed memory. Blocks only for an in-flight
-    // GetAddr()/SetName() call, never for the resolver itself.
-    {
-        std::lock_guard<std::mutex> lock(m_dnsSink->mutex);
-        m_dnsSink->net = nullptr;
-    }
-
 #ifdef _WIN32
     if (initialized) {
         if (hasIPv6 && hICMP6 != INVALID_HANDLE_VALUE)
@@ -568,14 +510,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
         tracing = false;
         return;
     }
-    // Non-blocking is a hard requirement: the dispatch loop drains the
-    // socket until EAGAIN, which on a blocking socket would park the whole
-    // trace on the last recvfrom().
-    if (::fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
-        ::close(fd);
-        tracing = false;
-        return;
-    }
+    ::fcntl(fd, F_SETFL, O_NONBLOCK);
 
 #ifdef __linux__
     // Linux ping sockets don't hand ICMP error messages (Time Exceeded,
@@ -583,21 +518,11 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
     // do — those get delivered to the socket's error queue instead, which
     // has to be explicitly enabled and drained separately. See the
     // POLLERR handling below. (No effect / not needed on macOS or BSD.)
-    //
-    // Failure here is fatal rather than ignorable: without the error queue
-    // no intermediate hop is ever heard from, so every row but the
-    // destination would read as a timeout and the app would look like a
-    // plain ping pretending to be a traceroute. Better to stop with the
-    // engine's own error path than to draw a confidently wrong route.
     int recverr = 1;
-    const int recverrRc = isV6
-        ? ::setsockopt(fd, IPPROTO_IPV6, IPV6_RECVERR, &recverr, sizeof(recverr))
-        : ::setsockopt(fd, IPPROTO_IP,   IP_RECVERR,   &recverr, sizeof(recverr));
-    if (recverrRc < 0) {
-        ::close(fd);
-        tracing = false;
-        return;
-    }
+    if (isV6)
+        ::setsockopt(fd, IPPROTO_IPV6, IPV6_RECVERR, &recverr, sizeof(recverr));
+    else
+        ::setsockopt(fd, IPPROTO_IP, IP_RECVERR, &recverr, sizeof(recverr));
 #endif
 
     // Per-hop schedule state — the POSIX equivalent of HopState above
@@ -640,15 +565,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
 
         if (isV6) {
             int val = hs.ttl;
-            // A failed hop-limit set would send this probe with the previous
-            // hop's TTL, so the reply would be filed against the wrong row.
-            // Count it as a failed probe instead of quietly mismeasuring.
-            if (::setsockopt(fd, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &val, sizeof(val)) < 0) {
-                SetErrorName(hs.ttl - 1, IP_GENERAL_FAILURE);
-                RecordProbe(hs.ttl - 1, false, 0, IP_GENERAL_FAILURE);
-                hs.pending = false;
-                return;
-            }
+            ::setsockopt(fd, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &val, sizeof(val));
 
             struct icmp6_hdr req6 = {};
             req6.icmp6_type  = ICMP6_ECHO_REQUEST;
@@ -669,13 +586,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
             }
         } else {
             int val = hs.ttl;
-            // Same reasoning as the v6 hop limit above.
-            if (::setsockopt(fd, IPPROTO_IP, IP_TTL, &val, sizeof(val)) < 0) {
-                SetErrorName(hs.ttl - 1, IP_GENERAL_FAILURE);
-                RecordProbe(hs.ttl - 1, false, 0, IP_GENERAL_FAILURE);
-                hs.pending = false;
-                return;
-            }
+            ::setsockopt(fd, IPPROTO_IP, IP_TTL, &val, sizeof(val));
 
             struct icmp req4 = {};
             req4.icmp_type  = ICMP_ECHO;
@@ -982,14 +893,9 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                             seq   = ntohs(inner_icmp6->icmp6_seq);
                             valid = true;
                         }
-                    } else if (icmp6->icmp6_type == ICMP6_DST_UNREACH ||
-                               icmp6->icmp6_type == ICMP6_PACKET_TOO_BIG ||
-                               icmp6->icmp6_type == ICMP6_PARAM_PROB) {
-                        // Every ICMPv6 error quotes the packet that caused
-                        // it, so one branch matches them all. Packet Too Big
-                        // and Parameter Problem used to be ignored outright,
-                        // which surfaced as a plain timeout.
+                    } else if (icmp6->icmp6_type == ICMP6_DST_UNREACH) {
                         if (const struct icmp6_hdr* inner_icmp6 = quotedIcmp6(readBuf, n)) {
+                            // Quoted original packet — check whose probe it was.
                             if (filterEchoId && ntohs(inner_icmp6->icmp6_id) != echoId)
                                 continue;
                             seq   = ntohs(inner_icmp6->icmp6_seq);
@@ -1016,8 +922,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                                     std::memcpy(addrex.sin6_addr, &from_in6->sin6_addr, 16);
                                     SetAddr6(hopIndex, addrex);
                                 } else {
-                                    const DWORD errStatus = Icmp6StatusFor(
-                                        icmp6->icmp6_type, icmp6->icmp6_code);
+                                    DWORD errStatus = IP_DEST_HOST_UNREACHABLE;
                                     SetErrorName(hopIndex, errStatus);
                                     RecordProbe(hopIndex, false, 0, errStatus);
                                 }
@@ -1117,17 +1022,11 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                         }
                     }
                 } else {
-                    // The error queue reports the same ICMP type/code the
-                    // packet carried, so both families map exactly as they
-                    // do on the recvfrom path above.
                     DWORD errStatus = IP_DEST_HOST_UNREACHABLE;
-                    if (isV6) {
-                        errStatus = Icmp6StatusFor(ee->ee_type, ee->ee_code);
-                    } else if (ee->ee_type == ICMP_UNREACH) {
+                    if (!isV6 && ee->ee_type == ICMP_UNREACH) {
                         if      (ee->ee_code == ICMP_UNREACH_NET)      errStatus = IP_DEST_NET_UNREACHABLE;
                         else if (ee->ee_code == ICMP_UNREACH_PORT)     errStatus = IP_DEST_PORT_UNREACHABLE;
                         else if (ee->ee_code == ICMP_UNREACH_PROTOCOL) errStatus = IP_DEST_PROT_UNREACHABLE;
-                        else if (ee->ee_code == ICMP_UNREACH_NEEDFRAG) errStatus = IP_PACKET_TOO_BIG;
                     }
                     SetErrorName(hopIndex, errStatus);
                     RecordProbe(hopIndex, false, 0, errStatus);
@@ -1164,47 +1063,30 @@ void OpenMTRNet::StopTrace()
 // reverse-DNS name if DNS lookups are enabled.
 static void DnsResolverThread(void* p)
 {
-    std::unique_ptr<DnsResolverArgs> args(static_cast<DnsResolverArgs*>(p));
-    DnsSink& sink = *args->sink;
+    auto* args     = (DnsResolverArgs*)p;
+    OpenMTRNet* net = args->net;
     char hostname[NI_MAXHOST];
 
-    // Read everything needed for the lookup in one locked step, then let go
-    // of the sink: the engine must stay destructible while getnameinfo()
-    // blocks, which on a hop with no PTR record can be many seconds.
-    SOCKADDR_INET addr{};
-    bool          wantDns = false;
-    {
-        std::lock_guard<std::mutex> lock(sink.mutex);
-        if (!sink.net)
-            return;                       // engine already gone
-        // Thread-safe copy of the hop's address (see OpenMTRNet::GetAddr).
-        addr    = sink.net->GetAddr(args->index);
-        wantDns = sink.net->opts.useDNS;
-    }
-
-    // The sockaddr length passed to getnameinfo must match the address
-    // family — passing the larger sockaddr_in6 size for a v4 hop would be a
+    // Thread-safe copy of the hop's address (see OpenMTRNet::GetAddr). The
+    // sockaddr length passed to getnameinfo must match the address family —
+    // passing the larger sockaddr_in6 size for a v4 hop would be a
     // family/length mismatch that can make the lookup fail silently.
-    const bool isV6  = (addr.Ipv6.sin6_family == AF_INET6);
-    sockaddr*  sa    = isV6 ? (sockaddr*)&addr.Ipv6 : (sockaddr*)&addr.Ipv4;
-    socklen_t  salen = isV6 ? sizeof(sockaddr_in6)  : sizeof(sockaddr_in);
+    SOCKADDR_INET addr  = net->GetAddr(args->index);
+    const bool    isV6  = (addr.Ipv6.sin6_family == AF_INET6);
+    sockaddr*     sa    = isV6 ? (sockaddr*)&addr.Ipv6 : (sockaddr*)&addr.Ipv4;
+    socklen_t     salen = isV6 ? sizeof(sockaddr_in6)  : sizeof(sockaddr_in);
 
-    // Store a result only if the engine is still alive; re-checked for each
-    // write, since the numeric and the PTR lookup are separated by the slow
-    // resolver call.
-    const auto publish = [&sink, &args](const char* name) {
-        std::lock_guard<std::mutex> lock(sink.mutex);
-        if (sink.net)
-            sink.net->SetName(args->index, const_cast<char*>(name));
-    };
-
-    if (!getnameinfo(sa, salen, hostname, NI_MAXHOST, nullptr, 0, NI_NUMERICHOST))
-        publish(hostname);
-
-    if (wantDns) {
-        if (!getnameinfo(sa, salen, hostname, NI_MAXHOST, nullptr, 0, 0))
-            publish(hostname);
+    if (!getnameinfo(sa, salen, hostname, NI_MAXHOST, nullptr, 0, NI_NUMERICHOST)) {
+        net->SetName(args->index, hostname);
     }
+
+    if (net->opts.useDNS) {
+        if (!getnameinfo(sa, salen, hostname, NI_MAXHOST, nullptr, 0, 0)) {
+            net->SetName(args->index, hostname);
+        }
+    }
+
+    delete args;
 }
 
 // ==========================================================================
@@ -1349,7 +1231,7 @@ void OpenMTRNet::SetAddr(int at, u_long addr)
         m_hops[at].addr.sin_addr.s_addr = addr;
         auto* args  = new DnsResolverArgs;
         args->index = at;
-        args->sink  = m_dnsSink;
+        args->net   = this;
 #ifdef _WIN32
         if (_beginthread(DnsResolverThread, 0, args) == static_cast<uintptr_t>(-1))
             delete args;
@@ -1386,7 +1268,7 @@ void OpenMTRNet::SetAddr6(int at, IPV6_ADDRESS_EX addrex)
             m_hops[at].addr6.sin6_addr.u.Word[i] = addrex.sin6_addr[i];
         auto* args  = new DnsResolverArgs;
         args->index = at;
-        args->sink  = m_dnsSink;
+        args->net   = this;
         if (_beginthread(DnsResolverThread, 0, args) == static_cast<uintptr_t>(-1))
             delete args;
     }
@@ -1414,7 +1296,7 @@ void OpenMTRNet::SetAddr6(int at, IPV6_ADDRESS_EX addrex)
         std::memcpy(&m_hops[at].addr6.sin6_addr, &addrex.sin6_addr, 16);
         auto* args  = new DnsResolverArgs;
         args->index = at;
-        args->sink  = m_dnsSink;
+        args->net   = this;
         std::thread([args]() { DnsResolverThread(args); }).detach();
     }
 #endif

@@ -20,6 +20,16 @@
 #include "version.h"
 #include "tracer.h"
 
+// ---------------------------------------------------------------------------
+// Update-check kill switch — flip to 1 to restore the GitHub release check
+// (see checkForUpdates() below and its call site in the constructor).
+// Set to 0 while investigating whether it plays any role in AV/VT false
+// positives on the Windows build. This is the ONLY line that needs to
+// change to turn it back on; checkForUpdates() itself and its curl-based
+// implementation are untouched, so re-enabling is a one-line, no-risk flip.
+// ---------------------------------------------------------------------------
+#define OPENMTR_ENABLE_UPDATE_CHECK 0
+
 #ifdef Q_OS_MAC
 #include <objc/runtime.h>
 #include <objc/message.h>
@@ -365,7 +375,13 @@ MainWindow::MainWindow(QWidget* parent)
 
     // Give the window a moment to finish showing before doing any network
     // I/O — same rationale as the frameless-style timer above.
+    //
+    // Temporarily disabled — see OPENMTR_ENABLE_UPDATE_CHECK near the top of
+    // this file for why and how to turn it back on. Flip that single macro
+    // to 1 to restore; nothing else needs to change.
+#if OPENMTR_ENABLE_UPDATE_CHECK
     QTimer::singleShot(1500, this, &MainWindow::checkForUpdates);
+#endif
 
 #ifndef Q_OS_MAC
     auto* scCopy   = new QShortcut(QKeySequence::Copy, this);
@@ -421,30 +437,69 @@ unsigned MainWindow::getPingSize() const noexcept { return static_cast<unsigned>
 //
 //   Statically linking Qt6Network (WinHTTP/Schannel/Crypt32 imports)
 //   purely for a "nice to have" version check gives Windows binaries a
-//   network+TLS capability profile that AV heuristics associate with
+//   network+TLS capability profile that AV/ML heuristics associate with
 //   downloader/C2 behaviour, and has previously triggered exactly that
 //   kind of false-positive detection on this binary.
 //
-// Fires once, shortly after startup; failures (offline, GitHub down,
-// unexpected response shape) are silently ignored. When a newer release
-// is found, a standalone "Update available" notice (showUpdateDialog())
-// is opened right away instead of leaving the user to notice the toolbar
-// badge on their own.
+// Fix: do the actual HTTPS request in a short-lived `curl` subprocess
+// instead of in-process. This is why Qt6Network is gone from this file
+// and from CMakeLists.txt entirely (it had no other caller) — the goal
+// isn't just to move this one call site, it's that OPENMTR.EXE ITSELF
+// no longer performs a TLS handshake or contains a network stack at
+// all, so there is nothing left in the shipped binary for that class of
+// heuristic to key off. The TLS handshake happens inside curl/curl.exe
+// - a binary AV/EDR vendors already know and allowlist - not inside our
+// process. QProcess::start() is used (never a shell), and the curl path
+// is always an explicit absolute path we resolve ourselves — never a
+// bare "curl" string — since Qt's own docs flag unqualified-name PATH
+// lookup as platform-inconsistent and it's been the subject of a real
+// security advisory in the past.
+//
+// Fires once, shortly after startup; failures (curl missing, offline,
+// GitHub down, unexpected response shape) are silently ignored. When a
+// newer release is found, a standalone "Update available" notice
+// (showUpdateDialog()) is opened right away instead of leaving the user
+// to notice the toolbar badge on their own.
 void MainWindow::checkForUpdates()
 {
-    if (!m_updateNam) m_updateNam = new QNetworkAccessManager(this);
+#ifdef Q_OS_WIN
+    // Shipped inbox since Windows 10 build 17063 (the 1803 feature
+    // update); hardcoded rather than PATH-searched so a same-named
+    // binary earlier in PATH can never be picked up instead.
+    static const QString curlPath = QStringLiteral("C:/Windows/System32/curl.exe");
+#elif defined(Q_OS_MACOS)
+    // Apple ships its own curl at this fixed path on every supported
+    // macOS release.
+    static const QString curlPath = QStringLiteral("/usr/bin/curl");
+#else
+    // No single well-known path is guaranteed across Linux distros, so
+    // resolve it the same way a shell's PATH lookup would - once, via
+    // Qt's own API - rather than trusting an unqualified "curl" string
+    // to QProcess's own PATH search.
+    static const QString curlPath = QStandardPaths::findExecutable(QStringLiteral("curl"));
+#endif
+    if (curlPath.isEmpty() || !QFileInfo::exists(curlPath)) return;
 
-    QNetworkRequest req(QUrl(QStringLiteral(
-        "https://api.github.com/repos/x-rated/OpenMTR/releases/latest")));
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("OpenMTR"));
-    req.setRawHeader("Accept", "application/vnd.github+json");
+    if (m_updateProcess) return; // already in flight (shouldn't happen; fires once)
+    m_updateProcess = new QProcess(this);
+    m_updateProcess->setProgram(curlPath);
+    m_updateProcess->setArguments({
+        QStringLiteral("-s"),                 // silent - no progress meter on stdout
+        QStringLiteral("-L"),                 // follow redirects
+        QStringLiteral("--max-time"), QStringLiteral("10"),
+        QStringLiteral("-A"), QStringLiteral("OpenMTR"),
+        QStringLiteral("-H"), QStringLiteral("Accept: application/vnd.github+json"),
+        QStringLiteral("https://api.github.com/repos/x-rated/OpenMTR/releases/latest"),
+    });
 
-    QNetworkReply* reply = m_updateNam->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) return;
+    connect(m_updateProcess, &QProcess::finished, this,
+            [this](int exitCode, QProcess::ExitStatus status) {
+        QProcess* proc = m_updateProcess;
+        m_updateProcess = nullptr;
+        proc->deleteLater();
+        if (status != QProcess::NormalExit || exitCode != 0) return;
 
-        const auto doc = QJsonDocument::fromJson(reply->readAll());
+        const auto doc = QJsonDocument::fromJson(proc->readAllStandardOutput());
         if (!doc.isObject()) return;
         const QJsonObject obj = doc.object();
 
@@ -471,6 +526,11 @@ void MainWindow::checkForUpdates()
         if (m_updateBadge) m_updateBadge->show();
         showUpdateDialog();
     });
+
+    // start(), never startCommand()/a shell - arguments are passed as an
+    // argv array, so there is no shell-quoting/injection surface even
+    // though every argument here is a compile-time literal anyway.
+    m_updateProcess->start();
 }
 
 // ==========================================================================

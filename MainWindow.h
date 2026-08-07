@@ -40,9 +40,6 @@
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QMenu>
-#include <QtNetwork/QNetworkAccessManager>
-#include <QtNetwork/QNetworkReply>
-#include <QtNetwork/QNetworkRequest>
 #include <QtGui/QCursor>
 #include <QtGui/QScreen>
 #include <QtGui/QGuiApplication>
@@ -86,6 +83,9 @@
 #include <QtCore/QUrl>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
+#include <QtCore/QProcess>
+#include <QtCore/QStandardPaths>
+#include <QtCore/QFileInfo>
 
 
 #ifdef Q_OS_LINUX
@@ -2211,9 +2211,10 @@ private:
     void    updateAppIcon();
     void    showAboutDialog();
     void    showUpdateDialog();
-    // One-shot GitHub release check (see MainWindow.cpp for the network
-    // capability trade-off this reintroduces). No-op if it can't reach
-    // the network or the response doesn't parse as expected.
+    // One-shot GitHub release check, shelled out to the OS's own curl
+    // instead of linking Qt6Network in-process (see MainWindow.cpp for
+    // why). No-op if curl can't be found/run, can't reach the network,
+    // or the response doesn't parse as expected.
     void    checkForUpdates();
 #ifdef Q_OS_MAC
     void    installMacMenuBar();
@@ -2284,7 +2285,7 @@ private:
     bool            m_updateAvailable = false;
     QString         m_updateVersion;
     QString         m_updateReleaseUrl;
-    QNetworkAccessManager* m_updateNam = nullptr;
+    QProcess*       m_updateProcess = nullptr;
     QTimer          m_iconTipTimer;
     // Restores the Copy button's label after its "Copied" confirmation.
     QTimer          m_copyFeedbackTimer;

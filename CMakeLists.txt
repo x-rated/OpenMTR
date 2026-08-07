@@ -48,12 +48,11 @@ endif()
 include_directories("${CMAKE_CURRENT_BINARY_DIR}")
 
 # ---- Dependencies ----------------------------------------------------------
-# Network: the one-shot GitHub release check (MainWindow::checkForUpdates()).
-# Statically linking this pulls in WinHTTP/Schannel/Crypt32 on Windows and
-# gives the binary a network+TLS capability profile that AV heuristics can
-# associate with downloader/C2 behaviour - see the comment above
-# MainWindow::checkForUpdates() for the fuller trade-off.
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
+# No Qt6Network: the one-shot GitHub release check (MainWindow::
+# checkForUpdates()) shells out to the OS's own curl instead of linking
+# a network/TLS stack into this binary - see the comment above that
+# function for the fuller trade-off.
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
 # DBus is Linux-only: used to watch org.freedesktop.portal.Settings for live
 # light/dark and accent-colour changes, and for a one-shot accent-colour
@@ -114,7 +113,6 @@ endif()
 # ---- Link libraries (Qt + the platform APIs the app uses) ------------------
 target_link_libraries(OpenMTR PRIVATE
     Qt6::Widgets
-    Qt6::Network
 )
 
 if(UNIX AND NOT APPLE)
