@@ -22,11 +22,15 @@
 
 // ---------------------------------------------------------------------------
 // Update-check kill switch — flip to 1 to restore the GitHub release check
-// (see checkForUpdates() below and its call site in the constructor).
-// Set to 0 while investigating whether it plays any role in AV/VT false
-// positives on the Windows build. This is the ONLY line that needs to
-// change to turn it back on; checkForUpdates() itself and its curl-based
-// implementation are untouched, so re-enabling is a one-line, no-risk flip.
+// (see checkForUpdates() below and its call site in the constructor). Both
+// the call site AND the function body itself are gated on this, so at 0
+// none of the curl/QProcess/GitHub-API code — or its string literals
+// (curl.exe path, the api.github.com URL, etc.) — is compiled into the
+// binary at all; it's not just unreachable, it's absent. Kept at 0 because
+// it's suspected of contributing to AV/VT ML false positives (Wacatac) on
+// the Windows build. This is the ONLY line that needs to change to turn it
+// back on; checkForUpdates() itself and its curl-based implementation are
+// untouched, so re-enabling is a one-line, no-risk flip.
 // ---------------------------------------------------------------------------
 #define OPENMTR_ENABLE_UPDATE_CHECK 0
 
@@ -462,6 +466,7 @@ unsigned MainWindow::getPingSize() const noexcept { return static_cast<unsigned>
 // to notice the toolbar badge on their own.
 void MainWindow::checkForUpdates()
 {
+#if OPENMTR_ENABLE_UPDATE_CHECK
 #ifdef Q_OS_WIN
     // Shipped inbox since Windows 10 build 17063 (the 1803 feature
     // update); hardcoded rather than PATH-searched so a same-named
@@ -531,6 +536,7 @@ void MainWindow::checkForUpdates()
     // argv array, so there is no shell-quoting/injection surface even
     // though every argument here is a compile-time literal anyway.
     m_updateProcess->start();
+#endif // OPENMTR_ENABLE_UPDATE_CHECK
 }
 
 // ==========================================================================
