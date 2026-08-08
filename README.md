@@ -1,8 +1,8 @@
 # OpenMTR
 
-A modern, lightweight network diagnostic tool for Windows that combines traceroute and ping into a single real-time view. Built with a clean Qt6 interface designed to feel native on Windows 11.
+A modern, lightweight network diagnostic tool that combines traceroute and ping into a single real-time view. Built with a clean Qt6 interface, runs on Windows, macOS and Linux.
 
-![OpenMTR Screenshot](https://i.imgur.com/1Qqgne8.jpg)
+![OpenMTR Screenshot](https://i.imgur.com/fl7LcVm.jpg)
 ```
 OpenMTR Export
 Target  : gov.bw
@@ -57,20 +57,20 @@ Duration: 2:00
 - **ASN lookup** — Autonomous System Numbers resolved automatically via Team Cymru's DNS service
 - **IPv4 & IPv6** — full dual-stack support with auto-fallback if the target can't be resolved with the chosen protocol
 - **Configurable ping size** — adjust ICMP payload from 64 to 8192 bytes
-- **Light & dark themes** — switches instantly; Windows 11 title bar follows your choice via the native DWM API; auto-detects system theme on launch; separate light/dark app icons
+- **Light & dark themes** — switches instantly and auto-detects the system theme on launch; the title bar follows along natively on every platform (DWM on Windows, Cocoa appearance on macOS, the desktop portal's accent/theme setting on Linux)
+- **Custom frameless window** — the same Fluent-inspired look and controls on every platform; on macOS this includes a native application menu (About, Copy Report, Export…, Window)
 - **Export & copy** — save results as `.txt`, `.csv`, or `.json` via a native Save dialog, or copy the full report to clipboard; double-click any cell to copy its value; exported text adapts column widths to actual content
-- **Keyboard shortcuts** — `Enter` in the target or ping size field starts/stops tracing; `Ctrl+C` copies the full report to clipboard (or just the selected text when a text field is focused); `Ctrl+S` opens the export dialog
-- **Smart column sizing** — Hostname and IP columns dynamically share available space based on content width
-- **Fluent Design UI** — interface fine-tuned to match the WinUI 3 / Fluent Design look and feel (Mica backdrop, spacing, borders, controls, focus states)
+- **Keyboard shortcuts** — `Enter` in the target or ping size field starts/stops tracing; `Ctrl+C`/`⌘C` copies the full report to clipboard (or just the selected text when a text field is focused); `Ctrl+S`/`⌘S` opens the export dialog
+- **Smart column sizing** — Hostname and IP columns dynamically share available space based on content width, and the toolbar itself adapts as the window narrows
 - **No admin rights required** — runs as a standard user
 - **Instant close** — the app exits immediately at any time; background threads are stopped asynchronously without blocking the UI
-- **HiDPI aware** — Per-Monitor V2 DPI aware for crisp rendering on high-DPI and mixed-DPI setups
+- **HiDPI aware** — crisp rendering on high-DPI and mixed-DPI setups on every platform
 
 ---
 
 ## Requirements
 
-- Windows 11 (AMD64 or ARM64), macOS 13 Ventura or newer (Apple Silicon), or a current Linux desktop (x86_64 or aarch64)
+- Windows 11 (AMD64 or ARM64), macOS 13 Ventura or newer (Apple Silicon), or a Linux desktop (x86_64 or aarch64) with glibc 2.43 or newer
 
 ---
 
@@ -126,6 +126,11 @@ OpenMTR is built on the shoulders of:
 
 - **[WinMTR Redux](https://github.com/White-Tiger/WinMTR)** by White-Tiger — the network engine (IPv4/IPv6 ICMP tracing, per-hop statistics)
 - **[WinMTR](https://github.com/WinMTR/WinMTR-Official)** by Vasile Laurentiu Stanimir (2000) — the original WinMTR
+- **[BKPepe](https://github.com/BKPepe)** — created and fine-tuned the macOS build, with the help of Claude.ai
+
+### AI disclosure
+
+OpenMTR — the whole application, including this README — is built with [Claude](https://www.anthropic.com/claude) (Anthropic), directed and reviewed by the project maintainer.
 
 ---
 
@@ -134,3 +139,12 @@ OpenMTR is built on the shoulders of:
 GPL v2 — see [LICENSE](LICENSE).
 
 The network engine is derived from WinMTR Redux and original WinMTR, both GPL v2.
+
+---
+
+## Support
+
+If OpenMTR has been useful to you, consider supporting its development — thank you! 💙
+
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20me-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/slamb)
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-x--rated-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/x-rated)
