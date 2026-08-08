@@ -341,8 +341,14 @@ jobs:
             bg=(--background packaging/dmg-background.png)
           fi
 
-          # Icon coordinates are centres in window points and must stay in
-          # step with the template.
+          # create-dmg only offers compressed output formats (UDZO/UDBZ/
+          # ULFO/ULMO) — no uncompressed option. Build the polished,
+          # background/icon-positioned image under a temp name, then
+          # hdiutil-convert it for the actual shipped artifact: ULFO
+          # (lzfse) trades some of UDRO's entropy reduction for a much
+          # smaller file than fully uncompressed, still well below UDZO's
+          # default zlib ratio that triggered the original Wacatac.B!ml
+          # false positive on this project's .dmg.
           create-dmg \
             --volname "OpenMTR" \
             --volicon build/app_icon.icns \
@@ -354,8 +360,13 @@ jobs:
             --hide-extension "OpenMTR.app" \
             --no-internet-enable \
             "${bg[@]}" \
-            build/OpenMTR.dmg \
+            build/OpenMTR-compressed.dmg \
             build/OpenMTR.app
+
+          hdiutil convert build/OpenMTR-compressed.dmg \
+            -format ULFO \
+            -o build/OpenMTR.dmg
+          rm -f build/OpenMTR-compressed.dmg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
