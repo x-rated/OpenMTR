@@ -86,6 +86,14 @@ qt_add_executable(OpenMTR
     resources.qrc
 )
 
+# app_icon.png is already zlib-compressed as PNG; rcc's own default
+# compression pass on top of that just spends cycles re-compressing
+# near-incompressible data for no size benefit, while adding another small
+# high-entropy blob to the binary for no reason.
+set_source_files_properties(resources.qrc PROPERTIES
+    AUTORCC_OPTIONS "--no-compress"
+)
+
 if(WIN32)
     target_sources(OpenMTR PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/app.rc")
 endif()
