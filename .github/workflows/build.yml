@@ -363,8 +363,14 @@ jobs:
             build/OpenMTR-compressed.dmg \
             build/OpenMTR.app
 
+          # UDRO (uncompressed), not a different/looser compressor: any
+          # compressed format's data fork still reads close to random-
+          # entropy to a scanner, same lesson as the AppImage change above.
+          # Only skipping compression entirely gets the .dmg's entropy
+          # profile near the statically-linked Windows .exe's (~6.5)
+          # instead of a compressed blob's (~8.0). Costs size in exchange.
           hdiutil convert build/OpenMTR-compressed.dmg \
-            -format ULFO \
+            -format UDRO \
             -o build/OpenMTR.dmg
           rm -f build/OpenMTR-compressed.dmg
 
@@ -519,7 +525,7 @@ jobs:
       - name: Drop transitive ICU dependency
         run: find AppDir -name 'libicu*' -delete
 
-      - name: Build AppImage
+      - name: Populate AppDir
         env:
           # Squashing the AppImage's own FUSE mount inside a container
           # without --privileged is unreliable; extract-and-run avoids it.
@@ -536,15 +542,46 @@ jobs:
           # Qt would have been under /usr/lib), so without this it fails with
           # "Could not find dependency: libQt6Widgets.so.6".
           export LD_LIBRARY_PATH="$HOME/qt-noicu/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          # No --output appimage here on purpose — see the next step. This
+          # call only bundles libs/plugins into AppDir and writes AppRun,
+          # the .desktop file, and the icon.
           ./linuxdeploy-${{ matrix.linuxdeploy_arch }}.AppImage \
             --appdir AppDir \
             --plugin qt \
-            --output appimage \
             --desktop-file openmtr.desktop \
             --icon-file app_icon.png
 
-      - name: Rename artifact
-        run: mv OpenMTR*.AppImage OpenMTR.AppImage
+      - name: Build AppImage with gzip-compressed squashfs
+        # linuxdeploy's own --output appimage calls a bundled appimagetool
+        # whose static mksquashfs is compiled with GZIP_SUPPORT=0 /
+        # XZ_SUPPORT=0 / LZO_SUPPORT=0 — zstd only, no way to pick another
+        # compressor through linuxdeploy's CLI. Building the squashfs
+        # ourselves with the distro's mksquashfs (gzip support included)
+        # and hand-assembling the AppImage is the only way to control this.
+        # gzip over zstd for the same reason ci/qt-macos.conf later moved
+        # the .dmg off zlib to lzfse: a different compressor's on-disk
+        # layout is a different signature to whatever heuristic flagged the
+        # zstd-squashfs overlay. Entropy itself won't drop much either way —
+        # it's still compressed data — so this is worth verifying against
+        # VirusTotal once built, not assumed to fix it outright.
+        run: |
+          sudo apt-get install -y --no-install-recommends squashfs-tools
+          # No compression at all, not just a different algorithm: any
+          # squashfs compressor (gzip included, per the last change) still
+          # leaves the data blocks looking close to random to an entropy
+          # scan — that's what compression is. -noI -noD -noF -noX stores
+          # everything raw, so the AppImage's entropy profile approaches the
+          # statically-linked Windows .exe's (~6.5) instead of a packed
+          # blob's (~8.0). Costs size — expect roughly 2-3x over the gzip
+          # build — traded deliberately for that.
+          mksquashfs AppDir OpenMTR.squashfs \
+            -root-owned -noappend -noI -noD -noF -noX
+          runtime_url="https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-${{ matrix.linuxdeploy_arch }}"
+          wget -q -O runtime "$runtime_url"
+          chmod +x runtime
+          cat runtime OpenMTR.squashfs > OpenMTR.AppImage
+          chmod +x OpenMTR.AppImage
+          rm -f runtime OpenMTR.squashfs
 
       - name: Verify the AppImage ships no ICU
         # linuxdeploy pulls in whatever the binaries link against, so a Qt
