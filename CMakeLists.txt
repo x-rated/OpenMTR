@@ -19,7 +19,7 @@ if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "Build architectures" FORCE)
 endif()
 
-project(OpenMTR VERSION 1.3.0 LANGUAGES CXX)
+project(OpenMTR VERSION 1.1.0 LANGUAGES CXX)
 
 # ---- Language & Qt code generation -----------------------------------------
 set(CMAKE_CXX_STANDARD 20)
@@ -126,6 +126,16 @@ if(WIN32)
         dwmapi       # Mica backdrop, dark titlebar, rounded corners
         dnsapi       # DnsQuery_W (ASN TXT lookups)
         comdlg32     # GetSaveFileNameW (export dialog)
+        delayimp     # Required by /DELAYLOAD below
+    )
+    # Delay-load the networking DLLs: they're pulled in only when the code
+    # actually calls into them (first ping / DNS lookup), instead of at
+    # process start. Keeps the import table from showing ws2_32/Iphlpapi
+    # as unconditional startup dependencies, which some AV ML classifiers
+    # weight as a "reaches for the network immediately" signal.
+    target_link_options(OpenMTR PRIVATE
+        /DELAYLOAD:ws2_32.dll
+        /DELAYLOAD:Iphlpapi.dll
     )
 endif()
 
@@ -136,6 +146,12 @@ set_target_properties(OpenMTR PROPERTIES
     WIN32_EXECUTABLE TRUE
     MACOSX_BUNDLE TRUE
 )
+
+# Whole-program / link-time code generation (MSVC: /GL + /LTCG, GCC/Clang:
+# equivalent LTO). Standard for professionally built release binaries;
+# absence of it can leave the compiled code in an unoptimized shape that
+# some AV ML classifiers weight as an "amateur toolchain" signal.
+set_target_properties(OpenMTR PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
 
 # ---- macOS bundle identity & icon ------------------------------------------
 # Without these, CMake's default Info.plist template ships placeholders that
@@ -232,4 +248,17 @@ if(MSVC)
     # (emit guard checks) and the link flag (emit guard tables + set the bit).
     target_compile_options(OpenMTR PRIVATE /guard:cf)
     target_link_options(OpenMTR PRIVATE /GUARD:CF)
+
+    # /RELEASE: forces the linker to compute and set the PE header checksum
+    # (some configurations otherwise leave it zero) — a lot of malware ships
+    # with a missing/invalid checksum, so a correct one is a mild "properly
+    # built" signal for AV heuristics.
+    target_link_options(OpenMTR PRIVATE /RELEASE)
+
+    # /PDBALTPATH: the CodeView debug directory embedded in the .exe itself
+    # (not just the .pdb) normally records the absolute build-machine path
+    # to the PDB, e.g. D:\a\OpenMTR\OpenMTR\build\OpenMTR.pdb — leaked even
+    # though the PDB is never shipped. %_PDB% collapses that to just the
+    # bare filename, removing the CI runner path from the shipped binary.
+    target_link_options(OpenMTR PRIVATE /PDBALTPATH:%_PDB%)
 endif()

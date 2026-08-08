@@ -29,7 +29,7 @@ BEGIN
             VALUE "FileDescription",  "OpenMTR - Network Diagnostic Tool"
             VALUE "FileVersion",      "@PROJECT_VERSION@.0"
             VALUE "InternalName",     "OpenMTR"
-            VALUE "LegalCopyright",   "GPL v2"
+            VALUE "LegalCopyright",   "Copyright (C) 2026 Rudolf Slambera (GPLv2)"
             VALUE "OriginalFilename", "OpenMTR.exe"
             VALUE "ProductName",      "OpenMTR"
             VALUE "ProductVersion",   "@PROJECT_VERSION@.0"
