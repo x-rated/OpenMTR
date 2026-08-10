@@ -47,24 +47,19 @@ Q_IMPORT_PLUGIN(QWindowsIntegrationPlugin)
 //  AppImage desktop-entry self-integration (Linux only)
 // ==========================================================================
 //
-// GNOME Shell — under Wayland in particular, but Mutter/X11 too — never
-// reads window icons directly (there's no Wayland equivalent of X11's
-// _NET_WM_ICON, which is what MainWindow::updateAppIcon()'s setWindowIcon()
-// call would otherwise rely on). It only ever resolves a taskbar/dock icon
-// by matching the window's app_id (== our setDesktopFileName() below) or
-// WM_CLASS against an *installed* .desktop file somewhere on
-// XDG_DATA_DIRS. A bare, un-integrated AppImage has no such file anywhere
-// on the system, so the shell falls back to a generic gear icon — this is
-// true of every AppImage, not an OpenMTR-specific bug, which is why tools
+// GNOME Shell (Wayland especially, but Mutter/X11 too) never reads window
+// icons directly — there's no Wayland equivalent of X11's _NET_WM_ICON. It
+// only resolves a taskbar/dock icon by matching the window's app_id
+// (== setDesktopFileName() below) or WM_CLASS against an *installed*
+// .desktop file on XDG_DATA_DIRS. A bare AppImage has none, so it falls
+// back to a generic gear icon — true of every AppImage, which is why tools
 // like AppImageLauncher exist to register one on first run.
 //
-// This does that registration itself, without requiring a separate tool or
-// root: it writes a desktop entry + icon into the user's own XDG data dir
-// (~/.local/share), with Exec pointing at wherever this particular
-// AppImage file currently lives. Safe to call on every launch — it only
-// touches disk when the content actually needs to change (a new AppImage
-// version or a different path), so a normal launch is a couple of cheap
-// existence/content checks.
+// This does that registration itself, without a separate tool or root: it
+// writes a desktop entry + icon into the user's XDG data dir
+// (~/.local/share), Exec pointing at wherever this AppImage currently
+// lives. Safe on every launch — it only touches disk when the content
+// actually needs to change.
 static void integrateAppImageDesktopEntry()
 {
     // Set by the AppImage runtime itself to the path of the running

@@ -21,16 +21,12 @@
 #include "tracer.h"
 
 // ---------------------------------------------------------------------------
-// Update-check kill switch — flip to 1 to restore the GitHub release check
-// (see checkForUpdates() below and its call site in the constructor). Both
-// the call site AND the function body itself are gated on this, so at 0
-// none of the curl/QProcess/GitHub-API code — or its string literals
-// (curl.exe path, the api.github.com URL, etc.) — is compiled into the
-// binary at all; it's not just unreachable, it's absent. Kept at 0 because
-// it's suspected of contributing to AV/VT ML false positives (Wacatac) on
-// the Windows build. This is the ONLY line that needs to change to turn it
-// back on; checkForUpdates() itself and its curl-based implementation are
-// untouched, so re-enabling is a one-line, no-risk flip.
+// Update-check kill switch. At 0, checkForUpdates() (both its call site and
+// body) compiles out entirely — the curl/QProcess/GitHub-API code and its
+// string literals are absent from the binary, not just unreachable. Kept at
+// 0 because the network+TLS profile is suspected of contributing to AV/VT
+// ML false positives (Wacatac) on the Windows build. Flip to 1 to restore;
+// no other change is needed.
 // ---------------------------------------------------------------------------
 #define OPENMTR_ENABLE_UPDATE_CHECK 0
 
@@ -128,42 +124,35 @@ static const QStringList COLUMNS = {
     "Best ms", "Avrg ms", "Wrst ms", "Last ms", "Jttr ms"
 };
 
-// kResizeMargin, ovEdgesAt() and ovCursorForEdges() now live in MainWindow.h
-// (Q_OS_LINUX section, near TitleBarWidget) so TitleBarWidget can share them
-// for its own edge detection along the top of the window.
+// kResizeMargin, ovEdgesAt() and ovCursorForEdges() live in MainWindow.h
+// (Q_OS_LINUX section, near TitleBarWidget) so TitleBarWidget can share
+// them for its own edge detection along the top of the window.
 
 #ifdef Q_OS_LINUX
 // Last-known system light/dark preference on Linux. Populated once from a
-// live query the first time MainWindow::isWindowsDarkMode() runs (Qt >=
-// 6.5: QStyleHints::colorScheme(); older Qt6: not used, see the palette-
-// inference fallback further down), then kept in sync by whichever live
-// signal actually fires for a given desktop - the colorSchemeChanged
-// handler in MainWindow's constructor (Qt >= 6.5 only) and/or
-// onPortalColorSchemeChanged() (any Qt version; see its own comment for why
-// both exist) - never by re-querying colorScheme() again.
-//
-// Some Linux platform-theme integrations emit colorSchemeChanged correctly
-// on every toggle, but let the colorScheme() property itself go stale
-// after the first transition (it stops tracking further changes even
-// though the signal keeps firing with the right value). MainWindow's own
-// theme only ever trusts the signal's parameter and never re-polls
-// colorScheme(), so it stays correct through any number of toggles.
+// live query the first time isWindowsDarkMode() runs (Qt >= 6.5:
+// QStyleHints::colorScheme(); older Qt6 uses the palette-inference
+// fallback further down), then kept in sync by whichever live signal
+// fires for a given desktop — the constructor's colorSchemeChanged
+// handler (Qt >= 6.5) and/or onPortalColorSchemeChanged() (any Qt
+// version; see its own comment for why both exist) — never by re-querying
+// colorScheme() again, since some Linux theme integrations let that
+// property go stale after the first transition even while the signal
+// keeps firing correctly.
 static bool s_linuxSystemDarkCache = false;
 static bool s_linuxSystemDarkCacheValid = false;
 #endif
 
-// Glyph for the light/dark toggle button. Fixed — always a sun, on every
-// platform, regardless of which theme is currently active. It used to show
-// the theme it would switch *to* (sun in dark mode, moon in light mode),
-// but that meant the icon itself changed on every toggle, which read as a
-// bug rather than a feature.
+// Glyph for the light/dark toggle button. Always a sun regardless of the
+// active theme — showing the theme it would switch *to* made the icon
+// change on every toggle, which read as a bug rather than a feature.
 //
-// Outside Windows the icon "font" is just the system UI font, so the choice
-// is constrained by what that font actually covers — checked against SFNS's
-// cmap rather than guessed: U+2600 ☀ is not present natively and falls back
-// to Apple Symbols, which is why the original U+263C ☼ came out looking
-// like a tiny asterisk. ☀ survives that fallback well enough to keep, with
-// U+FE0E to stop macOS drawing it as a colour emoji.
+// Outside Windows the icon is drawn from the system UI font, so the glyph
+// is constrained to what that font covers (checked against SFNS's cmap).
+// Neither candidate is natively present, so both fall back to Apple
+// Symbols: U+263C ☼ rendered there as a tiny asterisk, while U+2600 ☀
+// survives the same fallback acceptably, so it's the one kept — with
+// U+FE0E appended to stop macOS drawing it as a colour emoji.
 static QString themeButtonGlyph()
 {
 #ifdef Q_OS_WIN
@@ -232,29 +221,21 @@ MainWindow::MainWindow(QWidget* parent)
 #ifdef Q_OS_LINUX
     // On Linux, width()/height() include the transparent kShadowMargin
     // gutter reserved on every side for the hand-painted drop shadow (see
-    // setupUi()) - it eats into the widget's own size instead of sitting
-    // outside it like a real compositor shadow would. Without adding it
-    // back here, the visible card would end up 2*kShadowMargin px smaller
-    // in each dimension than the same numbers give on Windows/macOS, where
-    // there's no such gutter.
+    // setupUi()), which eats into the widget's own size instead of sitting
+    // outside it like a real compositor shadow. Add it back here so the
+    // visible card matches the Windows/macOS size instead of coming out
+    // 2*kShadowMargin px smaller in each dimension.
     setMinimumSize(950 + 2 * kShadowMargin, 500 + 2 * kShadowMargin);
     resize(1200 + 2 * kShadowMargin, 550 + 2 * kShadowMargin);
     // Without an explicit position, a freshly-launched window can land
-    // flush (or within kSnapEdgeTolerance) against its screen's available-
-    // geometry edge purely as the window manager's default placement -
-    // there's no saved geometry to restore here, so this is the *only* way
-    // the window can appear "already snapped" at startup. currentGutter()
-    // can't tell that apart from an actual user-initiated snap/tile, so it
-    // zeroes the gutter on that edge, making the layout margins asymmetric
-    // instead of the uniform kShadowMargin this file's math above assumes
-    // - which both skews the visible card off-centre in the window and
-    // throws off anything measured from a left-anchored widget position
-    // (e.g. the Start/Stop button alignment in setupUi(), which combines
-    // that with a right-edge-derived offset that's unaffected). Centering
-    // on the screen up front keeps a fresh launch away from that edge
-    // entirely, while leaving the actual snap/tile handling (resizeEvent()/
-    // moveEvent()/changeEvent() -> syncLinuxGutter()) untouched for when
-    // the user genuinely does snap the window later.
+    // flush against its screen's available-geometry edge purely from the
+    // window manager's default placement. currentGutter() can't tell that
+    // apart from a genuine user-initiated snap/tile, so it would zero the
+    // gutter on that edge — skewing the visible card off-centre and
+    // throwing off left-anchored widget positions such as the Start/Stop
+    // button alignment in setupUi(). Centering on the screen up front
+    // avoids that at launch, while resizeEvent()/moveEvent()/
+    // changeEvent() -> syncLinuxGutter() still handle real snap/tile later.
     if (const QScreen* scr = screen()) {
         const QRect avail = scr->availableGeometry();
         move(avail.center().x() - width() / 2, avail.center().y() - height() / 2);
@@ -326,15 +307,11 @@ MainWindow::MainWindow(QWidget* parent)
 #if defined(Q_OS_LINUX) || defined(Q_OS_MAC)
     // Windows gets its light/dark switch via WM_SETTINGCHANGE in
     // nativeEvent(); on Linux and macOS, Qt >= 6.5's
-    // QStyleHints::colorSchemeChanged is the equivalent — a signal that
-    // fires only when the OS light/dark preference actually changes (via
-    // the XDG portal / gtk3 platform theme on Linux, the Cocoa appearance
-    // observer on macOS), never spuriously just because the in-app theme
-    // button (onToggleTheme()) has since diverged from it. Without this,
-    // macOS only picked its theme up once at launch and ignored System
-    // Settings changes for the rest of the run. Requires Qt >= 6.5 (both
-    // CI builds are far past that), hence the version guard for anyone
-    // building against an older local Qt.
+    // QStyleHints::colorSchemeChanged is the equivalent, firing only on a
+    // genuine OS preference change (XDG portal / gtk3 on Linux, Cocoa
+    // appearance observer on macOS), never just because the in-app theme
+    // button has since diverged from it. Version-guarded since both CI
+    // builds are past 6.5 but a local Qt might not be.
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
     connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged,
             this, [this](Qt::ColorScheme scheme) {
@@ -350,17 +327,13 @@ MainWindow::MainWindow(QWidget* parent)
 #endif
 #ifdef Q_OS_LINUX
     // Belt-and-suspenders alongside the QStyleHints connect above:
-    // QStyleHints::colorSchemeChanged depends on Qt's own platform-theme
-    // plugin (gtk3/kde) picking up the change, which is confirmed broken on
-    // several current distro/DE combinations - e.g. it can simply never
-    // fire under GNOME Shell even though the OS setting does change (Qt
-    // forum: "colorSchemeChanged signal literally never emits under Fedora
-    // Rawhide under Gnome Shell or KDE Plasma 6, no matter how you debug").
-    // This subscribes directly to the desktop-portal DBus signal that GNOME
-    // and KDE both implement independently of that broken plugin path, so
-    // live theme switching keeps working even when the Qt signal doesn't
-    // fire. No-op if no portal is running (e.g. a bare WM with no
-    // xdg-desktop-portal).
+    // colorSchemeChanged depends on Qt's gtk3/kde platform-theme plugin,
+    // which is confirmed to never fire under some distro/DE combinations
+    // (e.g. GNOME Shell) even though the OS setting does change. This
+    // subscribes directly to the desktop-portal DBus signal that GNOME and
+    // KDE both implement independently of that plugin, so live theme
+    // switching still works when the Qt signal doesn't fire. No-op if no
+    // portal is running.
     QDBusConnection::sessionBus().connect(
         QStringLiteral("org.freedesktop.portal.Desktop"),
         QStringLiteral("/org/freedesktop/portal/desktop"),
@@ -434,36 +407,24 @@ unsigned MainWindow::getPingSize() const noexcept { return static_cast<unsigned>
 //  Update checker
 // ==========================================================================
 
-// One-shot check against the GitHub Releases API. Reintroduced at the
-// user's explicit request after previously being removed for the exact
-// reason noted below — kept here so the trade-off stays visible instead
-// of silently disappearing back into a comment:
+// One-shot check against the GitHub Releases API, done via a short-lived
+// `curl` subprocess rather than Qt6Network in-process: statically linking
+// Qt6Network purely for a version check gives Windows binaries a
+// network+TLS profile that AV/ML heuristics associate with downloader/C2
+// behaviour, and has triggered false positives here before. Routing the
+// HTTPS request through curl.exe — a binary AV/EDR vendors already
+// allowlist — means OPENMTR.EXE itself never performs a TLS handshake or
+// carries a network stack, so there's nothing left for that heuristic to
+// key off. Qt6Network is dropped from this file and CMakeLists.txt
+// entirely as a result. QProcess::start() is used (never a shell), and the
+// curl path is always an explicit absolute path resolved ourselves —
+// never a bare "curl" string, since unqualified PATH lookup is
+// platform-inconsistent and has had a real security advisory against it.
 //
-//   Statically linking Qt6Network (WinHTTP/Schannel/Crypt32 imports)
-//   purely for a "nice to have" version check gives Windows binaries a
-//   network+TLS capability profile that AV/ML heuristics associate with
-//   downloader/C2 behaviour, and has previously triggered exactly that
-//   kind of false-positive detection on this binary.
-//
-// Fix: do the actual HTTPS request in a short-lived `curl` subprocess
-// instead of in-process. This is why Qt6Network is gone from this file
-// and from CMakeLists.txt entirely (it had no other caller) — the goal
-// isn't just to move this one call site, it's that OPENMTR.EXE ITSELF
-// no longer performs a TLS handshake or contains a network stack at
-// all, so there is nothing left in the shipped binary for that class of
-// heuristic to key off. The TLS handshake happens inside curl/curl.exe
-// - a binary AV/EDR vendors already know and allowlist - not inside our
-// process. QProcess::start() is used (never a shell), and the curl path
-// is always an explicit absolute path we resolve ourselves — never a
-// bare "curl" string — since Qt's own docs flag unqualified-name PATH
-// lookup as platform-inconsistent and it's been the subject of a real
-// security advisory in the past.
-//
-// Fires once, shortly after startup; failures (curl missing, offline,
-// GitHub down, unexpected response shape) are silently ignored. When a
-// newer release is found, a standalone "Update available" notice
-// (showUpdateDialog()) is opened right away instead of leaving the user
-// to notice the toolbar badge on their own.
+// Fires once shortly after startup; failures (curl missing, offline,
+// GitHub down, unexpected response shape) are silently ignored. A newer
+// release triggers showUpdateDialog() immediately rather than leaving the
+// user to notice the toolbar badge on their own.
 void MainWindow::checkForUpdates()
 {
 #if OPENMTR_ENABLE_UPDATE_CHECK
@@ -886,34 +847,26 @@ void MainWindow::setupUi()
 
 // Measures the Loss column's bar position from the table's own (fixed,
 // platform-independent) column widths, then trims m_targetEdit so the
-// Start/Stop button's real, laid-out left edge lands exactly there. Because
-// the correction is derived from m_startStopBtn's *actual* post-layout
-// position rather than a hand-summed guess, it's already self-correcting
-// against everything to its left having a different size on a different
-// platform - toolLabel/pingSizeLabel/bytesLabel text metrics, the IPv6
-// checkbox's native indicator, and so on.
+// Start/Stop button's real, laid-out left edge lands exactly there. The
+// correction is derived from m_startStopBtn's *actual* post-layout
+// position rather than a hand-summed guess, so it self-corrects against
+// everything to its left sizing differently per platform.
 //
-// Native style metrics for widgets to its left (the IPv6 checkbox's
-// indicator, a spin-box's arrow glyph on Windows) can keep settling for a
-// little while after the window first appears, so a single measurement
-// isn't reliable on its own. This reports back whether it actually had to
-// move anything, so scheduleButtonAlignment() can keep re-measuring and
-// re-correcting over a short window until things are stable.
+// Native style metrics to its left (the IPv6 checkbox's indicator, a
+// spin-box's arrow glyph on Windows) can keep settling briefly after the
+// window first appears, so a single measurement isn't reliable alone.
+// This reports back whether it actually had to move anything, so
+// scheduleButtonAlignment() can keep re-measuring until things settle.
 bool MainWindow::alignTargetEditToLossBar()
 {
     if (!m_toolbar || !m_targetEdit || !m_table || !m_startStopBtn) return false;
-    // Deliberately NOT using m_table->horizontalHeader()->sectionViewportPosition()
-    // here: at the point this first runs, m_table isn't the QStackedWidget's
-    // current page yet (the app opens on the placeholder page, before any
-    // trace has started), and the Stretch columns (Hostname/IP) aren't
-    // reliably sized until it is. Going from the window's own right edge
-    // instead sidesteps needing the Stretch columns at all: this top-level
-    // window always has real, current geometry (it was resized in the
-    // constructor), and every column from Loss rightward is Fixed, so
-    // querying their actual columnWidth() - rather than hand-summing literal
-    // pixel counts - is safe to do regardless of the table's own show state:
-    // Fixed columns report whatever setColumnWidth() gave them independent
-    // of the table's overall size, unlike the Stretch columns to Loss's left.
+    // Deliberately not using m_table->horizontalHeader()->sectionViewportPosition():
+    // at the point this first runs, m_table isn't the QStackedWidget's current
+    // page yet (the app opens on the placeholder page), so the Stretch columns
+    // (Hostname/IP) aren't reliably sized. Measuring from the window's own
+    // right edge instead sidesteps needing them: every column from Loss
+    // rightward is Fixed, so querying its actual columnWidth() is safe
+    // regardless of the table's show state.
 #ifdef Q_OS_LINUX
     // On Linux, width() includes the transparent kShadowMargin gutter
     // reserved on every side for the hand-painted drop shadow (see
