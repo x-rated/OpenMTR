@@ -369,6 +369,12 @@ MainWindow::MainWindow(QWidget* parent)
         QStringLiteral("SettingChanged"),
         this, SLOT(onPortalSettingChanged(QString,QString,QDBusVariant)));
 #endif
+#ifdef Q_OS_MAC
+    // Live accent-colour updates — see installMacAccentColorObserver() in
+    // MainWindow.h for why light/dark's colorSchemeChanged connect above
+    // doesn't already cover this.
+    installMacAccentColorObserver(this);
+#endif
 
     QTimer::singleShot(50, this, [this]() {
         applyFramelessStyle();
@@ -1161,7 +1167,11 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
     // MainWindow::paintEvent() paints an equivalent flat rounded background
     // itself for the same reason. macOS has no Mica equivalent (and uses the
     // native title bar, not this frameless setup), so it gets a real opaque
-    // fill instead.
+    // fill instead — #202020 here is a coincidental match to macOS's own
+    // dark title bar (sampled at 32,32,32 on a real window), not a value
+    // derived from any macOS spec; see the light-theme counterpart below,
+    // where the old value (Windows' light-Mica fallback) did NOT match and
+    // left a visible seam under the white title bar.
     QString centralBg = "#centralWidget { background-color: #202020; }";
 #if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
     centralBg = "#centralWidget { background-color: transparent; }";
@@ -1281,7 +1291,13 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
     sheet.replace("$BRDSIDE",  ovAccentBlend(QColor(255, 255, 255), m_accent, 20.0 / 255.0));  // top/side hairline
     sheet.replace("$BRDBOT",   ovAccentBlend(QColor(0, 0, 0),       m_accent, 102.0 / 255.0)); // bottom elevation
     sheet.replace("$BRDPRESS", ovAccentBlend(m_accent, QColor(243, 243, 243), 0.80)); // pressed fill twin, over light Mica
-    QString centralBg = "#centralWidget { background-color: #f3f3f3; }";
+    // #f3f3f3 is the Windows light-Mica solid fallback, not a macOS value.
+    // macOS's own plain (non-toolbar) title bar renders as flat white in
+    // light appearance — confirmed by sampling a real screenshot of this
+    // window (title bar 255,255,255 vs. the old #f3f3f3 body, a visible
+    // seam). White here makes the content view match that title bar, the
+    // same way #202020 already happens to match it in dark appearance.
+    QString centralBg = "#centralWidget { background-color: #ffffff; }";
 #if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
     centralBg = "#centralWidget { background-color: transparent; }";
 #endif
@@ -1486,6 +1502,16 @@ void MainWindow::updateMacMenuActionState(QWidget* focusWidget)
     if (m_actExport)
         m_actExport->setEnabled(!inTextField && m_exportBtn && m_exportBtn->isEnabled());
 }
+
+// See MainWindow.h and installMacAccentColorObserver() for why this exists:
+// AppKit's live accent-colour notification has no direct MainWindow target,
+// so it lands here instead. Mirrors onPortalSettingChanged()'s
+// "accent-color" branch on Linux.
+void MainWindow::reapplyThemeForAccentChange()
+{
+    if (m_darkMode) applyDarkTheme();
+    else             applyLightTheme();
+}
 #endif
 
 // Push the current theme to the DWM: immersive dark mode, rounded corners,
@@ -1684,6 +1710,24 @@ void MainWindow::applyFramelessStyle()
     // frame situation has settled.
     if (!isMaximized())
         resize(1200, 550);
+#endif
+#ifdef Q_OS_MAC
+    // Unlike Windows (custom titlebar drawn inside the resized client area)
+    // and Linux (fully frameless, see setupUi()), macOS keeps its own real
+    // NSWindow title bar - m_titleBar is null there (see setupUi()) and
+    // nothing in this codebase ever accounted for its height, so the
+    // constructor's resize(1200, 550) only sized the *content* below the
+    // title bar. The window as a whole came out taller than 550 by however
+    // tall that native title bar is, unlike the exact 1200x550 Windows and
+    // Linux both end up with. Shrink the content once the native window
+    // exists and its real frame geometry is known, so total height (native
+    // title bar + content) matches the other platforms instead of just the
+    // content alone.
+    if (!isMaximized()) {
+        const int chromeHeight = frameGeometry().height() - geometry().height();
+        if (chromeHeight > 0)
+            resize(1200, 550 - chromeHeight);
+    }
 #endif
 }
 

@@ -152,6 +152,12 @@
 // ==========================================================================
 
 #ifdef Q_OS_MAC
+// Forward declaration: MainWindow itself isn't declared until further down
+// this file (see the file-level comment above), but the accent-colour
+// observer below needs to name it — both as the QPointer's template
+// argument and as installMacAccentColorObserver()'s parameter type.
+class MainWindow;
+
 // Read NSColor.controlAccentColor (macOS 10.14+) through the Cocoa runtime
 // and convert it to a QColor. Every step is nil-checked, so any surprise
 // (missing class/selector on some future macOS version) just falls through
@@ -189,6 +195,12 @@ inline QColor macOsSystemAccentColor(const QColor& fallback)
     const double b = send(converted, sel_registerName("blueComponent"));
     return QColor(qRound(r * 255.0), qRound(g * 255.0), qRound(b * 255.0));
 }
+
+// installMacAccentColorObserver() and its helpers are declared after the
+// MainWindow class below (not here), since QMetaObject::invokeMethod()
+// needs MainWindow to be a complete type — a forward declaration is enough
+// for the QPointer<MainWindow> and MainWindow* uses above, but not for
+// that call.
 #endif
 
 #ifdef Q_OS_LINUX
@@ -2226,6 +2238,14 @@ private:
     // buttons they mirror plus the focused widget — see the comment at the
     // shortcut block in the constructor for the focus rule they share.
     void    updateMacMenuActionState(QWidget* focusWidget);
+    // Re-applies the active theme so a live system accent-colour change is
+    // picked up without a light/dark toggle — called from
+    // installMacAccentColorObserver()'s notification handler. Mirrors
+    // MainWindow::onPortalSettingChanged()'s "accent-color" branch on Linux.
+    // Q_INVOKABLE: reached via QMetaObject::invokeMethod() from a plain C
+    // function (the Cocoa notification target), which can't call a private
+    // member function directly.
+    Q_INVOKABLE void reapplyThemeForAccentChange();
     QAction* m_actCopy   = nullptr;   // Edit → Copy Report (⌘C)
     QAction* m_actExport = nullptr;   // File → Export…    (⌘S)
 #endif
@@ -2343,6 +2363,81 @@ private:
 
     QColor  m_accent { 0x4C, 0xC2, 0xFF };
 };
+
+#ifdef Q_OS_MAC
+// Live accent-colour updates on macOS. Unlike light/dark mode — which Qt's
+// own QStyleHints::colorSchemeChanged reports (see the constructor) —
+// AppKit has no per-process NSNotificationCenter notification for "the
+// user changed System Settings > Appearance > Accent colour". The
+// documented way apps pick it up without polling is
+// NSDistributedNotificationCenter's system-wide "AppleColorPreferences-
+// ChangedNotification", broadcast by System Settings itself to every
+// running app. Reaching that from C++ needs a real Objective-C object as
+// the observer/selector target (blocks aren't practical to build by hand
+// against the plain C runtime API used throughout this file), so this
+// allocates a tiny NSObject subclass at runtime with one method that
+// forwards into MainWindow.
+//
+// Target is a plain static QPointer rather than an Objective-C ivar: this
+// app only ever has one MainWindow, and QPointer already goes null safely
+// if that window is destroyed first. Declared here (after MainWindow's own
+// definition above) rather than up with macOsSystemAccentColor(), because
+// QMetaObject::invokeMethod() below needs MainWindow to be a complete type,
+// not just forward-declared.
+static QPointer<MainWindow> s_macAccentObserverTarget;
+
+static void onMacAccentColorChanged(id /*self*/, SEL /*cmd*/, id /*notification*/)
+{
+    // String-based overload deliberately: reapplyThemeForAccentChange() is
+    // private, and this is a plain C function, not a MainWindow member or
+    // friend, so it can't take the method's address directly — going
+    // through the meta-object by name sidesteps that.
+    if (s_macAccentObserverTarget)
+        QMetaObject::invokeMethod(s_macAccentObserverTarget,
+                                   "reapplyThemeForAccentChange",
+                                   Qt::QueuedConnection);
+}
+
+inline void installMacAccentColorObserver(MainWindow* window)
+{
+    s_macAccentObserverTarget = window;
+
+    // Registered once per process under a fixed name; objc_getClass() finds
+    // it again on any later call instead of re-allocating (this app only
+    // ever calls this once, from MainWindow's constructor, but it's cheap
+    // insurance against ever calling it twice).
+    Class observerClass = objc_getClass("OpenMTRAccentObserver");
+    if (!observerClass) {
+        observerClass = objc_allocateClassPair(objc_getClass("NSObject"), "OpenMTRAccentObserver", 0);
+        if (!observerClass) return;
+        class_addMethod(observerClass, sel_registerName("accentColorChanged:"),
+                         reinterpret_cast<IMP>(onMacAccentColorChanged), "v@:@");
+        objc_registerClassPair(observerClass);
+    }
+
+    // Deliberately never released: this is one instance for the process's
+    // entire lifetime, on par with the handful of other one-off Cocoa
+    // objects this file creates and never explicitly tears down (e.g. the
+    // NSAppearance instances in setMacOsDarkAppearance()).
+    id observer = reinterpret_cast<id (*)(Class, SEL)>(objc_msgSend)(
+        observerClass, sel_registerName("new"));
+    if (!observer) return;
+
+    id center = reinterpret_cast<id (*)(Class, SEL)>(objc_msgSend)(
+        objc_getClass("NSDistributedNotificationCenter"), sel_registerName("defaultCenter"));
+    if (!center) return;
+
+    id name = reinterpret_cast<id (*)(id, SEL, const char*)>(objc_msgSend)(
+        reinterpret_cast<id>(objc_getClass("NSString")),
+        sel_registerName("stringWithUTF8String:"),
+        "AppleColorPreferencesChangedNotification");
+    if (!name) return;
+
+    reinterpret_cast<void (*)(id, SEL, id, SEL, id, id)>(objc_msgSend)(
+        center, sel_registerName("addObserver:selector:name:object:"),
+        observer, sel_registerName("accentColorChanged:"), name, nullptr);
+}
+#endif
 
 // ==========================================================================
 //  Modal "Mica" dialog
