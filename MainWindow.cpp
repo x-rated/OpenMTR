@@ -63,6 +63,34 @@ static void setMacOsDarkAppearance(WId winId, bool dark)
     reinterpret_cast<void (*)(id, SEL, id)>(objc_msgSend)(
         window, sel_registerName("setAppearance:"), appearance);
 }
+
+// Set the native NSWindow subtitle — the small secondary line macOS itself
+// draws under the title bar's title (NSWindow.subtitle, macOS 11+; this
+// project targets 13.0, so no availability check needed). This mirrors what
+// TitleBarWidget's subtitle label shows on Windows/Linux, but through
+// AppKit's own affordance instead of a custom-drawn label, so the live test
+// duration appears in the title bar in a way that matches native macOS
+// window chrome rather than imitating the WinUI title/subtitle look.
+static void setMacOsWindowSubtitle(WId winId, const QString& subtitle)
+{
+    id view = (id)winId;
+    if (!view) return;
+
+    SEL windowSel = sel_registerName("window");
+    typedef id (*WindowMsgSend)(id, SEL);
+    WindowMsgSend windowFunc = reinterpret_cast<WindowMsgSend>(objc_msgSend);
+    id window = windowFunc(view, windowSel);
+    if (!window) return;
+
+    const QByteArray utf8 = subtitle.toUtf8();
+    id nsSubtitle = reinterpret_cast<id (*)(id, SEL, const char*)>(objc_msgSend)(
+        reinterpret_cast<id>(objc_getClass("NSString")),
+        sel_registerName("stringWithUTF8String:"),
+        utf8.constData());
+
+    reinterpret_cast<void (*)(id, SEL, id)>(objc_msgSend)(
+        window, sel_registerName("setSubtitle:"), nsSubtitle);
+}
 #endif
 
 // Qt.
@@ -2782,7 +2810,7 @@ void MainWindow::onStartStop()
         setTracingInputsEnabled(false);
         // Clear the finished test's final elapsed; the subtitle stays empty
         // until counting begins. The window title itself never changes.
-        if (m_titleBar) m_titleBar->setSubtitle(QString());
+        updateTitleSubtitle(QString());
 
         const int wantFamily = m_ipv6Check->isChecked() ? AF_INET6 : AF_INET;
         const bool darkMode  = m_darkMode;
@@ -2854,6 +2882,19 @@ void MainWindow::onStartStop()
     }
 }
 
+// Live test-duration subtitle: TitleBarWidget's subtitle label on
+// Windows/Linux, the native NSWindow subtitle on macOS — see
+// setMacOsWindowSubtitle() above for why that's the native affordance
+// rather than a custom-drawn label there. An empty subtitle hides the
+// Windows/Linux label and clears the macOS NSWindow subtitle.
+void MainWindow::updateTitleSubtitle(const QString& subtitle)
+{
+    if (m_titleBar) m_titleBar->setSubtitle(subtitle);
+#ifdef Q_OS_MAC
+    setMacOsWindowSubtitle(winId(), subtitle);
+#endif
+}
+
 // Periodic table refresh while tracing.
 void MainWindow::onRefreshTimer()  { if (m_net && m_tracing) updateTable(); }
 
@@ -2865,7 +2906,7 @@ void MainWindow::onElapsedTimer()
     // the title bar's subtitle only. The OS window title stays fixed at the app
     // name — updating it every second would churn the Alt+Tab entry, taskbar
     // tooltip and screen-reader announcements once a second.
-    if (m_titleBar) m_titleBar->setSubtitle(formatDuration(m_elapsed.elapsed()));
+    updateTitleSubtitle(formatDuration(m_elapsed.elapsed()));
 }
 
 // Warm-up state machine. Waits until the discovered route holds steady and

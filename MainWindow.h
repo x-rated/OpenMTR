@@ -2209,6 +2209,10 @@ private:
     void    applyDarkTheme();
     void    applyLightTheme();
     void    updateAppIcon();
+    // Live test-duration subtitle: TitleBarWidget's subtitle label on
+    // Windows/Linux, the native NSWindow subtitle on macOS. See
+    // setMacOsWindowSubtitle() in MainWindow.cpp for the macOS side.
+    void    updateTitleSubtitle(const QString& subtitle);
     void    showAboutDialog();
     void    showUpdateDialog();
     // One-shot GitHub release check, shelled out to the OS's own curl
