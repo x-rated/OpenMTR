@@ -2,11 +2,19 @@
 #  GitHub Actions — build OpenMTR for Windows, macOS and Linux
 #
 #  Builds static Windows AMD64 + ARM64 binaries, a macOS ARM64 app bundle,
-#  and a Linux x86_64 AppImage in parallel, and uploads them as artifacts
-#  (each downloads as OpenMTR-Windows-<ARCH>.zip / OpenMTR-macOS.zip /
-#  OpenMTR-Linux-x86_64.zip, containing a plain OpenMTR.exe / OpenMTR.dmg /
-#  OpenMTR-x86_64.AppImage respectively). Triggered on pushes to main, pull
-#  requests, or manually.
+#  and static Linux AMD64 + ARM64 binaries in parallel, and uploads them as
+#  artifacts, each downloading as a zip named after the platform and
+#  architecture and containing a single, plainly-named executable — the
+#  same shape on every platform:
+#    OpenMTR-Windows-AMD64.zip / OpenMTR-Windows-ARM64.zip -> OpenMTR.exe
+#    OpenMTR-macOS.zip                                     -> OpenMTR.dmg
+#    OpenMTR-Linux-AMD64.zip  / OpenMTR-Linux-ARM64.zip     -> OpenMTR.AppImage
+#  The Linux build is packaged only as an AppImage (see the "Assemble
+#  AppImage" step) — an uncompressed squashfs payload bundling every
+#  non-base runtime dependency, double-clickable in file managers that
+#  recognise the AppImage MIME type. The raw, un-packaged ELF binary is
+#  built (it's what goes into the AppImage) but not uploaded as its own
+#  artifact. Triggered on pushes to main, pull requests, or manually.
 # ==========================================================================
 
 name: Build
@@ -380,25 +388,25 @@ jobs:
           name: OpenMTR-macOS
           path: build/OpenMTR.dmg
 
-  # Linux links Qt dynamically and bundles the runtime dependencies at
-  # packaging time via linuxdeploy + its Qt plugin, which play the same role
-  # appimage-side that macdeployqt plays for the .app bundle above. Two
-  # architectures, like the Windows matrix — but unlike Windows
+  # Linux links Qt statically (ci/qt-linux.conf), same approach as the
+  # Windows job below: the shipped OpenMTR binary needs nothing from the Qt
+  # build at runtime, only ordinary system libraries (glibc, libstdc++,
+  # X11/xcb, D-Bus) that any desktop already has. That makes it a single
+  # portable ELF file — copy it anywhere (a USB stick included) and run it,
+  # no install step and no self-extracting bundle/runtime to unpack first.
+  # Two architectures, like the Windows matrix — but unlike Windows
   # (cross-compiled via the ARM64 MSVC toolset), each runs natively on
   # GitHub's own AMD64/ARM64 Linux runners, so there's no cross-compilation
-  # to set up. Runs on ubuntu-26.04, which sets the AppImage's minimum glibc
-  # (resolute's, vs. jammy's 2.35) — less portable to older/LTS distros, an
-  # accepted trade-off for targeting current desktop systems.
+  # to set up. Runs on ubuntu-26.04.
   #
-  # Qt is built from source rather than taken from apt, for one reason:
-  # -no-icu. Both the distro package and Qt's own official Linux binaries
-  # link libQt6Core against libicui18n/libicuuc/libicudata, so linuxdeploy
-  # has to bundle ICU either way — 38 MB unpacked, ~11 MB of the AppImage,
-  # by far its largest single component and bigger than everything this app
-  # actually uses. Qt falls back to its own built-in codecs without it; the
-  # only real loss is locale-aware collation (QCollator), which nothing here
-  # uses. Same from-source approach as the Windows jobs, and cached the same
-  # way, so only the first run per architecture pays for it.
+  # Qt is built from source rather than taken from apt, for two reasons:
+  # -static (apt's Qt is dynamic-only) and -no-icu. Both the distro package
+  # and Qt's own official Linux binaries link libQt6Core against
+  # libicui18n/libicuuc/libicudata; Qt falls back to its own built-in codecs
+  # without it, and the only real loss is locale-aware collation
+  # (QCollator), which nothing here uses. Same from-source approach as the
+  # Windows jobs, and cached the same way, so only the first run per
+  # architecture pays for it.
   #
   # Deliberately NOT carrying over the Windows job's long -no-feature-* list:
   # that needs someone who can verify the result on a real Linux desktop.
@@ -409,13 +417,13 @@ jobs:
           - arch: amd64
             label: Linux AMD64
             runner: ubuntu-26.04
-            linuxdeploy_arch: x86_64
             artifact: OpenMTR-Linux-AMD64
+            appimage_arch: x86_64
           - arch: arm64
             label: Linux ARM64
             runner: ubuntu-26.04-arm
-            linuxdeploy_arch: aarch64
             artifact: OpenMTR-Linux-ARM64
+            appimage_arch: aarch64
 
     runs-on: ${{ matrix.runner }}
     name: Build (${{ matrix.label }})
@@ -442,7 +450,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential ninja-build pkg-config libfuse2 \
+            build-essential ninja-build pkg-config squashfs-tools \
             libgl1-mesa-dev libegl1-mesa-dev \
             libfontconfig1-dev libfreetype-dev \
             libx11-dev libx11-xcb-dev libxext-dev libxfixes-dev libxi-dev \
@@ -482,23 +490,25 @@ jobs:
           cmake --build "$HOME/qt-build" --parallel
           # --strip: a from-source Qt keeps its .symtab/.strtab, which the
           # distro packages ship stripped (their symbols live in separate
-          # -dbgsym packages). 7.5 MB across the libraries linuxdeploy
-          # bundles, for symbols no end user has any use for.
+          # -dbgsym packages) and which end up statically linked into
+          # OpenMTR otherwise, for symbols no end user has any use for.
           cmake --install "$HOME/qt-build" --strip
 
       - name: Verify the Qt build is usable
         # A Qt without the xcb platform plugin builds and installs fine and
         # then fails at runtime with "could not load the Qt platform plugin",
         # which no CI step would otherwise catch. Also re-checks the one
-        # thing this from-source build exists to guarantee.
+        # thing this from-source build exists to guarantee. Static build:
+        # both the plugin and Qt6Core are .a archives now, not .so, so this
+        # checks archive membership instead of readelf's dynamic section.
         run: |
-          plugin="$HOME/qt-noicu/plugins/platforms/libqxcb.so"
+          plugin="$HOME/qt-noicu/plugins/platforms/libqxcb.a"
           if [ ! -f "$plugin" ]; then
             echo "::error::Qt built without the xcb platform plugin — the app could not open a window."
             ls -R "$HOME/qt-noicu/plugins" || true
             exit 1
           fi
-          if readelf -d "$HOME/qt-noicu/lib/libQt6Core.so" | grep -qi icu; then
+          if find "$HOME/qt-noicu/lib" -maxdepth 1 -name 'libicu*' | grep -q .; then
             echo "::error::libQt6Core still links ICU despite -no-icu."
             exit 1
           fi
@@ -512,92 +522,131 @@ jobs:
             -DCMAKE_INSTALL_PREFIX=/usr
           cmake --build build --parallel
 
-      - name: Install into AppDir
-        run: cmake --install build --prefix AppDir/usr
-
-      - name: Fetch linuxdeploy & its Qt plugin
+      - name: Install & strip
+        # Same shape as the Linux install rules already in CMakeLists.txt
+        # (GNUInstallDirs, POST_BUILD objcopy split of debug info): this just
+        # runs them into a throwaway prefix instead of a distro root. Because
+        # Qt itself is static (ci/qt-linux.conf), the resulting
+        # out/bin/OpenMTR needs nothing from $HOME/qt-noicu at runtime — only
+        # ordinary system libraries (glibc, libstdc++, X11/xcb, D-Bus) that
+        # any desktop already has, the same trade-off the Windows/macOS
+        # builds already make for their own system frameworks.
         run: |
-          base="https://github.com/linuxdeploy"
-          wget -q "$base/linuxdeploy/releases/download/continuous/linuxdeploy-${{ matrix.linuxdeploy_arch }}.AppImage"
-          wget -q "$base/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-${{ matrix.linuxdeploy_arch }}.AppImage"
-          chmod +x linuxdeploy-*.AppImage
+          cmake --install build --prefix out
+          echo "Runtime dependencies (all expected to be system libraries):"
+          ldd out/bin/OpenMTR
 
-      - name: Drop transitive ICU dependency
-        run: find AppDir -name 'libicu*' -delete
-
-      - name: Populate AppDir
-        env:
-          # Squashing the AppImage's own FUSE mount inside a container
-          # without --privileged is unreliable; extract-and-run avoids it.
-          APPIMAGE_EXTRACT_AND_RUN: 1
+      - name: Verify no Qt/ICU libraries leaked in as shared objects
+        # Confirms the build actually stayed static: if a stray dynamic
+        # libQt6*.so or libicu*.so shows up in ldd's output, -static in
+        # ci/qt-linux.conf silently didn't take (e.g. a stale non-static Qt
+        # cache hit) and the binary would only run on machines that happen to
+        # have those libraries installed — defeating the point of this job.
         run: |
-          # linuxdeploy needs qmake to locate the Qt install — point it at
-          # the from-source build rather than anything apt may have left on
-          # the runner, or the AppImage would be filled with the wrong Qt
-          # (and with the ICU this job exists to avoid). Exported here rather
-          # than in env:, which does not expand $HOME.
-          export QMAKE="$HOME/qt-noicu/bin/qmake"
-          # linuxdeploy resolves each ELF dependency through the loader's
-          # normal search path. The from-source Qt lives outside it (an apt
-          # Qt would have been under /usr/lib), so without this it fails with
-          # "Could not find dependency: libQt6Widgets.so.6".
-          export LD_LIBRARY_PATH="$HOME/qt-noicu/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          # No --output appimage here on purpose — see the next step. This
-          # call only bundles libs/plugins into AppDir and writes AppRun,
-          # the .desktop file, and the icon.
-          ./linuxdeploy-${{ matrix.linuxdeploy_arch }}.AppImage \
-            --appdir AppDir \
-            --plugin qt \
-            --desktop-file openmtr.desktop \
-            --icon-file app_icon.png
-
-      - name: Build AppImage with gzip-compressed squashfs
-        # linuxdeploy's own --output appimage calls a bundled appimagetool
-        # whose static mksquashfs is compiled with GZIP_SUPPORT=0 /
-        # XZ_SUPPORT=0 / LZO_SUPPORT=0 — zstd only, no way to pick another
-        # compressor through linuxdeploy's CLI. Building the squashfs
-        # ourselves with the distro's mksquashfs (gzip support included)
-        # and hand-assembling the AppImage is the only way to control this.
-        # gzip over zstd for the same reason ci/qt-macos.conf later moved
-        # the .dmg off zlib to lzfse: a different compressor's on-disk
-        # layout is a different signature to whatever heuristic flagged the
-        # zstd-squashfs overlay. Entropy itself won't drop much either way —
-        # it's still compressed data — so this is worth verifying against
-        # VirusTotal once built, not assumed to fix it outright.
-        run: |
-          sudo apt-get install -y --no-install-recommends squashfs-tools
-          # No compression at all, not just a different algorithm: any
-          # squashfs compressor (gzip included, per the last change) still
-          # leaves the data blocks looking close to random to an entropy
-          # scan — that's what compression is. -noI -noD -noF -noX stores
-          # everything raw, so the AppImage's entropy profile approaches the
-          # statically-linked Windows .exe's (~6.5) instead of a packed
-          # blob's (~8.0). Costs size — expect roughly 2-3x over the gzip
-          # build — traded deliberately for that.
-          mksquashfs AppDir OpenMTR.squashfs \
-            -root-owned -noappend -noI -noD -noF -noX
-          runtime_url="https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-${{ matrix.linuxdeploy_arch }}"
-          wget -q -O runtime "$runtime_url"
-          chmod +x runtime
-          cat runtime OpenMTR.squashfs > OpenMTR.AppImage
-          chmod +x OpenMTR.AppImage
-          rm -f runtime OpenMTR.squashfs
-
-      - name: Verify the AppImage ships no ICU
-        # linuxdeploy pulls in whatever the binaries link against, so a Qt
-        # that quietly regained ICU (a cache built from an older config, an
-        # apt Qt winning the lookup) would silently put ~11 MB back. Cheap
-        # to assert, and the failure names the cause.
-        run: |
-          ./OpenMTR.AppImage --appimage-extract >/dev/null
-          if find squashfs-root -name 'libicu*' | grep -q .; then
-            echo "::error::AppImage contains ICU — the Qt it bundled was not the -no-icu build."
-            find squashfs-root -name 'libicu*'
+          if ldd out/bin/OpenMTR | grep -Ei 'libQt6|libicu'; then
+            echo "::error::OpenMTR still links Qt or ICU dynamically — the static Qt build wasn't used."
             exit 1
           fi
-          du -sh OpenMTR.AppImage
-          rm -rf squashfs-root
+          echo "No dynamic Qt/ICU dependencies; only system libraries remain."
 
+      - name: Assemble AppImage (uncompressed, self-contained payload)
+        # A regular AppImage is [runtime][squashfs], and appimagetool's
+        # squashfs is compressed (zstd) by default. A block of compressed
+        # data reads as near-random entropy to a scanner — the same shape
+        # as a packer/dropper payload — which is what made the earlier
+        # AppImage builds of this project trip Microsoft's Wacatac ML
+        # heuristic on VirusTotal (see the macOS DMG step above, which hit
+        # the identical entropy problem and fixed it the same way: drop the
+        # compression). mksquashfs's -noI/-noD/-noF/-noX disable inode,
+        # data, fragment and xattr compression respectively, so the payload
+        # stores OpenMTR's bytes close to as-is instead of as a compressed
+        # blob — same entropy profile as the plain out/bin/OpenMTR binary
+        # built above, just wrapped in AppImage's [runtime][squashfs]
+        # container so double-clicking it in a file manager that recognises
+        # the AppImage MIME type (e.g. GNOME Files with Gearlever/
+        # AppImageLauncher installed) launches it directly.
+        #
+        # Bundling runtime deps: out/bin/OpenMTR still dynamically needs
+        # ordinary desktop libraries (X11/xcb — including helper libs like
+        # libxcb-cursor that aren't guaranteed present on every install —
+        # D-Bus, fontconfig, freetype...). The whole point of AppImage is
+        # not needing the target system to already have those, so this
+        # walks `ldd`'s output and copies every resolved dependency except
+        # the small base set every glibc Linux ships (libc/ld-linux/
+        # libpthread/libm/libdl/librt/libresolv/libgcc_s — mixing a
+        # bundled libc with the host kernel's is what actually breaks
+        # portability, so those stay off the target's own copies). AppRun
+        # points LD_LIBRARY_PATH at the bundled copies before exec'ing the
+        # real binary.
+        #
+        # NOTE ON WHAT THIS DOES AND DOESN'T GUARANTEE: Wacatac.B!ml/C!ml
+        # is an opaque ML classifier, not a documented rule — dropping the
+        # compression removes one concrete, previously-confirmed trigger
+        # for it, matching the same fix already validated on the macOS
+        # side of this project, but no build change can *guarantee* an ML
+        # AV engine won't flag a given binary. If this build still trips
+        # Wacatac, the next lever to pull is code-signing (see the
+        # deferred-due-to-cost note in CMakeLists.txt) — an unsigned
+        # binary is itself a heavily-weighted signal for these classifiers,
+        # on every platform, independent of the container format.
+        run: |
+          set -e
+          APPDIR="$RUNNER_TEMP/OpenMTR.AppDir"
+          mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" \
+                   "$APPDIR/usr/share/applications" \
+                   "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+
+          cp out/bin/OpenMTR "$APPDIR/usr/bin/OpenMTR"
+          cp openmtr.desktop "$APPDIR/usr/share/applications/openmtr.desktop"
+          cp app_icon.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/openmtr.png"
+
+          # Bundle every dynamic dependency ldd can resolve, except the
+          # base glibc/toolchain set assumed present (and required to
+          # match the host's own copy) on every target.
+          echo "Runtime dependencies being bundled into usr/lib:"
+          ldd out/bin/OpenMTR | sed -n 's/^[^ ]* => \(\/[^ ]*\).*/\1/p' | while read -r lib; do
+            case "$(basename "$lib")" in
+              ld-linux*|libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|librt.so.*|libresolv.so.*|libgcc_s.so.*)
+                continue ;;
+            esac
+            echo "  $lib"
+            cp -L "$lib" "$APPDIR/usr/lib/"
+          done
+
+          # AppImage spec: the desktop file and icon must also sit at the
+          # AppDir root (not just under usr/share/...). AppRun is the
+          # actual entry point the runtime execs — a real script here
+          # (not a bare symlink) so it can point the dynamic linker at
+          # the bundled usr/lib before handing off to the real binary.
+          cp openmtr.desktop "$APPDIR/openmtr.desktop"
+          cp app_icon.png "$APPDIR/openmtr.png"
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'HERE="$(dirname "$(readlink -f "$0")")"' \
+            'export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' \
+            'exec "$HERE/usr/bin/OpenMTR" "$@"' \
+            > "$APPDIR/AppRun"
+          chmod +x "$APPDIR/AppRun"
+
+          mksquashfs "$APPDIR" "$RUNNER_TEMP/OpenMTR.squashfs" \
+            -root-owned -noappend -no-exports \
+            -noI -noD -noF -noX
+
+          runtime_url="https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-${{ matrix.appimage_arch }}"
+          echo "Fetching AppImage runtime: $runtime_url"
+          curl -sfL --retry 3 -o "$RUNNER_TEMP/runtime" "$runtime_url"
+          chmod +x "$RUNNER_TEMP/runtime"
+
+          cat "$RUNNER_TEMP/runtime" "$RUNNER_TEMP/OpenMTR.squashfs" \
+            > "OpenMTR.AppImage"
+          chmod +x "OpenMTR.AppImage"
+
+      # Only the AppImage is uploaded — the raw out/bin/OpenMTR ELF above
+      # exists solely as the AppImage's payload, matching the "one zip, one
+      # plainly-named executable" shape the Windows/macOS jobs already use
+      # (OpenMTR-Windows-AMD64.zip -> OpenMTR.exe, OpenMTR-macOS.zip ->
+      # OpenMTR.dmg), instead of shipping a bare, un-packaged ELF that most
+      # users have no direct use for.
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
