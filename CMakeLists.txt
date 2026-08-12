@@ -160,10 +160,26 @@ set_target_properties(OpenMTR PROPERTIES
 )
 
 # Whole-program / link-time code generation (MSVC: /GL + /LTCG, GCC/Clang:
-# equivalent LTO). Standard for professionally built release binaries;
-# absence of it can leave the compiled code in an unoptimized shape that
-# some AV ML classifiers weight as an "amateur toolchain" signal.
-set_target_properties(OpenMTR PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+# equivalent LTO). Worth having on a statically linked Qt: code generation
+# is deferred to link time, where the linker can see every translation unit
+# at once and drop Qt code nothing in the app can reach.
+#
+# Release only. The plain INTERPROCEDURAL_OPTIMIZATION property applies to
+# every configuration, which put -flto=thin on Debug builds too — where it
+# inlines and reorders exactly the code you are trying to step through,
+# leaves locals reported as "optimized out", and slows the link, all for a
+# configuration that never ships.
+#
+# Guarded because CMP0069 is NEW at this cmake_minimum_required, so a
+# toolchain without IPO support would fail at configure time rather than
+# quietly building without it.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT openmtr_ipo_supported LANGUAGES CXX)
+if(openmtr_ipo_supported)
+    set_target_properties(OpenMTR PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
+    )
+endif()
 
 # ---- macOS bundle identity & icon ------------------------------------------
 # Without these, CMake's default Info.plist template ships placeholders that
