@@ -341,14 +341,30 @@ jobs:
             bg=(--background packaging/dmg-background.png)
           fi
 
-          # create-dmg only offers compressed output formats (UDZO/UDBZ/
-          # ULFO/ULMO) — no uncompressed option. Build the polished,
-          # background/icon-positioned image under a temp name, then
-          # hdiutil-convert it for the actual shipped artifact: ULFO
-          # (lzfse) trades some of UDRO's entropy reduction for a much
-          # smaller file than fully uncompressed, still well below UDZO's
-          # default zlib ratio that triggered the original Wacatac.B!ml
-          # false positive on this project's .dmg.
+          # ULFO (lzfse), set directly on create-dmg rather than built as a
+          # temp image and hdiutil-converted afterwards — create-dmg takes
+          # --format itself, so the extra convert/rm round trip bought
+          # nothing.
+          #
+          # Deliberately NOT UDRO (uncompressed). That was an attempt to pull
+          # the .dmg's entropy profile down toward the statically-linked
+          # Windows .exe's, on the theory that a compressed data fork reads
+          # as near-random to a scanner. Measured on a realistic payload
+          # (13.6 MB of compiled Qt code):
+          #
+          #     ULFO  4.9 MB    UDZO  5.5 MB    UDRO  13.9 MB
+          #
+          # so UDRO costs ~2.5x for a hypothesis that was never measured
+          # end-to-end. Two things make that a bad trade here specifically:
+          # Wacatac.B!ml is a Windows Defender detection, and a macOS user
+          # opening a .dmg never runs Defender against it; and no release has
+          # ever shipped a .dmg at all (1.0.0 was a .zip, 1.1.0/1.2.0 are the
+          # two .exe files), so the only thing UDRO changed was the
+          # VirusTotal score of a CI artifact nobody downloads.
+          #
+          # ULFO is also the smallest of the three, so this is not a
+          # size-vs-safety compromise — it's smaller than the UDZO default
+          # that the original entropy concern was raised against.
           create-dmg \
             --volname "OpenMTR" \
             --volicon build/app_icon.icns \
@@ -359,20 +375,10 @@ jobs:
             --app-drop-link 430 190 \
             --hide-extension "OpenMTR.app" \
             --no-internet-enable \
+            --format ULFO \
             "${bg[@]}" \
-            build/OpenMTR-compressed.dmg \
+            build/OpenMTR.dmg \
             build/OpenMTR.app
-
-          # UDRO (uncompressed), not a different/looser compressor: any
-          # compressed format's data fork still reads close to random-
-          # entropy to a scanner, same lesson as the AppImage change above.
-          # Only skipping compression entirely gets the .dmg's entropy
-          # profile near the statically-linked Windows .exe's (~6.5)
-          # instead of a compressed blob's (~8.0). Costs size in exchange.
-          hdiutil convert build/OpenMTR-compressed.dmg \
-            -format UDRO \
-            -o build/OpenMTR.dmg
-          rm -f build/OpenMTR-compressed.dmg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
