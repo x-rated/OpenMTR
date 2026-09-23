@@ -163,7 +163,28 @@ set_target_properties(OpenMTR PROPERTIES
 # equivalent LTO). Standard for professionally built release binaries;
 # absence of it can leave the compiled code in an unoptimized shape that
 # some AV ML classifiers weight as an "amateur toolchain" signal.
-set_target_properties(OpenMTR PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+#
+# Release only. The plain INTERPROCEDURAL_OPTIMIZATION property applies to
+# every configuration, so Debug builds were getting -flto=thin as well. On
+# Apple platforms that is not just wasted link time: the code is generated
+# into a temporary LTO object that the executable's debug map (N_OSO) does
+# not name, so a Debug build has no line tables — lldb still finds functions
+# by name, but a file:line breakpoint stays pending. The configurations that
+# ship are Release on all three platforms (see .github/workflows/build.yml),
+# which is unchanged by this.
+#
+# Checked first, as CMake's documentation recommends: CMP0069 is NEW at this
+# cmake_minimum_required, so a toolchain without IPO support would otherwise
+# fail at configure time. It builds without LTO instead, and says so.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT openmtr_ipo_supported OUTPUT openmtr_ipo_output LANGUAGES CXX)
+if(openmtr_ipo_supported)
+    set_target_properties(OpenMTR PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
+    )
+else()
+    message(WARNING "IPO/LTO is not supported by this toolchain; Release is built without it: ${openmtr_ipo_output}")
+endif()
 
 # ---- macOS bundle identity & icon ------------------------------------------
 # Without these, CMake's default Info.plist template ships placeholders that
@@ -220,17 +241,43 @@ if(APPLE)
         MACOSX_BUNDLE_ICON_FILE            "app_icon.icns"
     )
 
-    # Pull the DWARF debug info the -g above generated back out of the
-    # Mach-O and into a companion .dSYM bundle, written next to the build
-    # tree (NOT inside OpenMTR.app), so a naive `zip -r OpenMTR.app` in CI
-    # never picks it up. The binary keeps only its LC_UUID load command and
-    # a debug-map reference to that .dSYM - not the DWARF payload itself -
-    # which is the normal shape of a properly built, professionally shipped
-    # macOS binary rather than one that never had debug info to begin with.
+    # Pull the DWARF debug info the -g below generated back out of the
+    # Mach-O and into a companion OpenMTR.app.dSYM, written next to the
+    # bundle (NOT inside it), so a naive `zip -r OpenMTR.app` in CI never
+    # picks it up. That is the name Xcode uses and the place lldb looks, so
+    # the stripped Release binary finds its symbols with no manual step, and
+    # a multi-config generator gives every configuration its own. What stays
+    # in the shipped binary is its LC_UUID, which is what pairs a crash
+    # report with this .dSYM - the normal shape of a properly built,
+    # professionally shipped macOS binary rather than one that never had
+    # debug info to begin with.
+    #
+    # Two more things are needed for that to actually happen:
+    #
+    # -object_path_lto, because Release builds with LTO (see
+    # INTERPROCEDURAL_OPTIMIZATION_RELEASE above). The linker defers code
+    # generation to link time and writes the result to a temporary object
+    # file, which the executable's debug map (N_OSO) then does not name — the
+    # entry is empty. dsymutil warns "no debug symbols in executable" and
+    # writes an empty .dSYM. Naming the directory keeps that object around
+    # and puts its path in the debug map for dsymutil to read.
+    #
+    # strip -S, because dsymutil only *reads* the executable, it never
+    # strips it. Without this the shipped binary keeps the N_SO/N_OSO debug
+    # map stabs, including the absolute build-machine paths N_SO records
+    # (/Users/runner/work/OpenMTR/...). A statically linked Qt can still
+    # carry build paths of its own in string data; strip -S does not touch
+    # those. Release only: a local Debug build should keep its debug map so
+    # lldb works straight off the binary. In CI this runs before the
+    # codesign step, so the signature covers the final bytes.
+    target_link_options(OpenMTR PRIVATE
+        "LINKER:-object_path_lto,${CMAKE_CURRENT_BINARY_DIR}/OpenMTR-lto")
     add_custom_command(TARGET OpenMTR POST_BUILD
         COMMAND dsymutil "$<TARGET_FILE:OpenMTR>"
-                -o "${CMAKE_CURRENT_BINARY_DIR}/OpenMTR.dSYM"
-        COMMENT "Generating OpenMTR.dSYM (kept local, not shipped in the .app)"
+                -o "$<TARGET_BUNDLE_DIR:OpenMTR>.dSYM"
+        COMMAND "$<$<CONFIG:Release>:strip;-S;$<TARGET_FILE:OpenMTR>>"
+        COMMAND_EXPAND_LISTS
+        COMMENT "Generating OpenMTR.app.dSYM (kept local, not shipped in the .app)"
         VERBATIM
     )
 endif()
@@ -288,8 +335,9 @@ endif()
 # Linux ELF nor the macOS Mach-O would carry any debug-info structure at
 # all. The actual DWARF payload is split back out immediately after linking
 # (see the Linux objcopy step and the macOS dsymutil step further down) and
-# never shipped - this only exists so the shipped binary keeps the normal
-# build-id/debuglink markers instead of looking like it never had any.
+# never shipped. What ships keeps only the normal build-id/debuglink/LC_UUID
+# markers instead of looking like it never had any, and the split-out file
+# is what a crash report from that binary is symbolicated with.
 if(NOT MSVC)
     target_compile_options(OpenMTR PRIVATE -Wall -Wextra -g)
 endif()
@@ -327,9 +375,9 @@ if(MSVC)
     # ends up embedded in the .exe). /DEBUG:FULL (not the default
     # /DEBUG:FASTLINK) forces a complete, self-contained PDB written at link
     # time rather than one that references the intermediate .obj files -
-    # required here since /GL+/LTCG (INTERPROCEDURAL_OPTIMIZATION above)
-    # already merges everything into one compiland, and because CI discards
-    # the .obj files after the build anyway.
+    # required here since /GL+/LTCG (INTERPROCEDURAL_OPTIMIZATION_RELEASE
+    # above) already merges everything into one compiland, and because CI
+    # discards the .obj files after the build anyway.
     target_compile_options(OpenMTR PRIVATE /Zi)
     target_link_options(OpenMTR PRIVATE /DEBUG:FULL)
 

@@ -9,6 +9,8 @@
 #    OpenMTR-Windows-AMD64.zip / OpenMTR-Windows-ARM64.zip -> OpenMTR.exe
 #    OpenMTR-macOS.zip                                     -> OpenMTR.dmg
 #    OpenMTR-Linux-AMD64.zip  / OpenMTR-Linux-ARM64.zip     -> OpenMTR.AppImage
+#  The macOS job also uploads OpenMTR-macOS-dSYM.zip: the debug symbols
+#  crash reports from that build are symbolicated with, not for users.
 #  The Linux build is packaged only as an AppImage (see the "Assemble
 #  AppImage" step) — an uncompressed squashfs payload bundling every
 #  non-base runtime dependency, double-clickable in file managers that
@@ -327,6 +329,34 @@ jobs:
           done < <(find build/OpenMTR.app -type f)
           exit $fail
 
+      - name: Verify the .dSYM belongs to the shipped binary
+        # The .dSYM is what gives a crash report from this exact build its
+        # file and line numbers, and it cannot be made again later: the
+        # binary's UUID differs on every build. So check it before keeping
+        # it: same UUID as the binary, real DWARF inside, and no stabs of any
+        # type (and with them build paths) left in the binary itself.
+        run: |
+          bin=build/OpenMTR.app/Contents/MacOS/OpenMTR
+          dsym=build/OpenMTR.app.dSYM
+          bin_uuid=$(dwarfdump --uuid "$bin" | awk '{print $2}')
+          dsym_uuid=$(dwarfdump --uuid "$dsym" | awk '{print $2}')
+          echo "binary UUID $bin_uuid, dSYM UUID $dsym_uuid"
+          if [ -z "$bin_uuid" ] || [ "$bin_uuid" != "$dsym_uuid" ]; then
+            echo "::error::The .dSYM does not match the binary"
+            exit 1
+          fi
+          dies=$(dwarfdump --debug-info "$dsym" | grep -c '^0x[0-9a-f]*: *DW_TAG' || true)
+          echo "DWARF entries in the .dSYM: $dies"
+          if [ "$dies" -eq 0 ]; then
+            echo "::error::The .dSYM contains no DWARF"
+            exit 1
+          fi
+          stabs=$(nm -ap "$bin" | grep -cE '^[0-9a-f]+ - ' || true)
+          if [ "$stabs" -ne 0 ]; then
+            echo "::error::The binary still has $stabs stab entries"
+            exit 1
+          fi
+
       - name: Package into a DMG
         run: |
           # create-dmg rather than bare hdiutil: hdiutil can only produce the
@@ -387,6 +417,15 @@ jobs:
         with:
           name: OpenMTR-macOS
           path: build/OpenMTR.dmg
+
+      - name: Upload debug symbols
+        # Never shipped to users — the DMG does not contain it. Kept so a
+        # crash report from this build can be resolved to file and line.
+        # The wildcard keeps the OpenMTR.app.dSYM folder itself in the zip.
+        uses: actions/upload-artifact@v6
+        with:
+          name: OpenMTR-macOS-dSYM
+          path: build/*.dSYM
 
   # Linux links Qt statically (ci/qt-linux.conf), same approach as the
   # Windows job below: the shipped OpenMTR binary needs nothing from the Qt
