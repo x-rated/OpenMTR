@@ -47,6 +47,18 @@ if(WIN32)
 endif()
 include_directories("${CMAKE_CURRENT_BINARY_DIR}")
 
+# ---- What to build ----------------------------------------------------------
+# Two programs: the OpenMTR window app, and openmtr-cli, the command-line
+# report tool (see the end of this file). The CLI needs QtCore only, so it
+# can be built against a Qt without any GUI modules by turning the window
+# app off — which is how CI builds the Linux CLI packages.
+option(OPENMTR_BUILD_GUI "Build the OpenMTR window app" ON)
+option(OPENMTR_BUILD_CLI "Build openmtr-cli, the command-line report tool" ON)
+
+find_package(Qt6 REQUIRED COMPONENTS Core)
+
+if(OPENMTR_BUILD_GUI)
+
 # ---- Dependencies ----------------------------------------------------------
 # No Qt6Network: the one-shot GitHub release check (MainWindow::
 # checkForUpdates()) shells out to the OS's own curl instead of linking
@@ -81,6 +93,10 @@ qt_add_executable(OpenMTR
     main.cpp
     MainWindow.cpp
     MainWindow.h
+    cli.cpp
+    cli.h
+    report.cpp
+    report.h
     tracer.cpp
     tracer.h
     resources.qrc
@@ -369,6 +385,56 @@ if(MSVC)
     # even though the .pdb itself is never distributed. %_PDB% collapses
     # that embedded path down to just the bare filename.
     target_link_options(OpenMTR PRIVATE /PDBALTPATH:%_PDB%)
+endif()
+
+endif() # OPENMTR_BUILD_GUI
+
+# ---- openmtr-cli -------------------------------------------------------------
+# The command-line report tool: the window app's --report mode (cli.cpp)
+# as its own console program. QtCore only — no GUI libraries at run time,
+# so it installs on servers — and a real console program on Windows, so
+# shells wait for it and see its exit code. Same hardening as the window
+# app above, minus what only a GUI binary needs.
+if(OPENMTR_BUILD_CLI)
+    add_executable(openmtr-cli
+        cli_main.cpp
+        cli.cpp
+        cli.h
+        report.cpp
+        report.h
+        tracer.cpp
+        tracer.h
+    )
+    # Nothing here is a QObject; skip the moc scan.
+    set_target_properties(openmtr-cli PROPERTIES
+        AUTOMOC OFF
+        INTERPROCEDURAL_OPTIMIZATION TRUE
+    )
+    target_link_libraries(openmtr-cli PRIVATE Qt6::Core)
+
+    if(WIN32)
+        target_link_libraries(openmtr-cli PRIVATE
+            ws2_32       # Winsock
+            Iphlpapi     # IcmpSendEcho2 / Icmp6SendEcho2
+            dnsapi       # DnsQuery_W (ASN TXT lookups)
+        )
+    endif()
+
+    if(MSVC)
+        target_compile_options(openmtr-cli PRIVATE /W4 /WX /wd4100 /wd4127 /guard:cf /Zi)
+        target_link_options(openmtr-cli PRIVATE
+            /GUARD:CF /RELEASE /DEBUG:FULL /OPT:REF /OPT:ICF /PDBALTPATH:%_PDB%)
+    else()
+        target_compile_options(openmtr-cli PRIVATE -Wall -Wextra)
+    endif()
+
+    # Not part of a default `cmake --install` (the Linux AppImage step
+    # installs the window app into a staging prefix); install it with
+    # `cmake --install <build> --component cli`.
+    include(GNUInstallDirs)
+    install(TARGETS openmtr-cli
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        COMPONENT cli EXCLUDE_FROM_ALL)
 endif()
 
 # ---- Tests -------------------------------------------------------------------

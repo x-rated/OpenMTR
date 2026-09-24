@@ -255,11 +255,12 @@ void OpenMTRNet::ResetHops()
 }
 
 // Restart statistics from this moment: zero every hop's counters and RTT
-// figures while keeping addresses and resolved names, and enable parking of
-// probes far beyond the route edge. Called by the UI when the results table
-// is revealed, so Loss/Sent/Recv and Best/Avrg/Wrst/Last/Jttr all describe
-// the same measurement window instead of mixing in warm-up probes.
-void OpenMTRNet::ResetStats()
+// figures while keeping addresses and resolved names, and (unless told not
+// to) enable parking of probes far beyond the route edge. Called by the UI
+// when the results table is revealed, so Loss/Sent/Recv and
+// Best/Avrg/Wrst/Last/Jttr all describe the same measurement window instead
+// of mixing in warm-up probes.
+void OpenMTRNet::ResetStats(bool enableParking)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     for (auto& h : m_hops) {
@@ -273,7 +274,7 @@ void OpenMTRNet::ResetStats()
         h.best      = 0;
         h.worst     = 0;
     }
-    m_parkingEnabled.store(true, std::memory_order_relaxed);
+    m_parkingEnabled.store(enableParking, std::memory_order_relaxed);
 }
 
 // ==========================================================================
@@ -351,7 +352,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
     // shares the same period, so inter-hop spacing is unaffected.
     ULONGLONG intervalMs = (ULONGLONG)(opts.interval * 1000);
     if (intervalMs == 0) intervalMs = 1000;
-    intervalMs += 16;
+    intervalMs += PROBE_PERIOD_PAD_MS;
     const ULONGLONG globalT0 = GetTickCount64();
 
     IPAddr       destAddr4 = 0;
@@ -623,7 +624,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
     if (intervalMs == 0)
         intervalMs = 1000;
     // See the Windows-side comment above for why 16 ms is added.
-    intervalMs += 16;
+    intervalMs += PROBE_PERIOD_PAD_MS;
     const ULONGLONG globalT0 = GetTickCount64();
 
     sockaddr_in  destAddr4 = {};

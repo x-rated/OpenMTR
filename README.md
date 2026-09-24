@@ -59,6 +59,7 @@ Duration: 2:00
 - **Configurable ping size** — adjust ICMP payload from 64 to 8192 bytes
 - **Light & dark themes** — switches instantly and auto-detects the system theme on launch; the title bar follows along natively on every platform (DWM on Windows, Cocoa appearance on macOS, the desktop portal's accent/theme setting on Linux)
 - **Custom frameless window** — the same Fluent-inspired look and controls on every platform; on macOS this includes a native application menu (About, Copy Report, Export…, Window)
+- **Command-line report mode** — `openmtr-cli --count 10 1.1.1.1` (or `OpenMTR --report ...`) runs a trace without a window, prints the report (text or JSON) to stdout and exits with a meaningful exit code, for scripts, cron, SSH sessions and CI; installable with a `.deb` or a one-line script — see [Command-line report mode](#command-line-report-mode)
 - **Export & copy** — save results as `.txt`, `.csv`, or `.json` via a native Save dialog, or copy the full report to clipboard; double-click any cell to copy its value; exported text adapts column widths to actual content
 - **Keyboard shortcuts** — `Enter` in the target or ping size field starts/stops tracing; `Ctrl+C`/`⌘C` copies the full report to clipboard (or just the selected text when a text field is focused); `Ctrl+S`/`⌘S` opens the export dialog
 - **Smart column sizing** — Hostname and IP columns dynamically share available space based on content width, and the toolbar itself adapts as the window narrows
@@ -101,6 +102,117 @@ it.
 
 ---
 
+## Command-line report mode
+
+Like `mtr --report`, OpenMTR can run a trace without a window: it counts a
+fixed number of probe cycles, prints the same report as **Copy** / **Export**
+to stdout and exits. No display is needed, so it works over SSH, from cron and
+in CI pipelines.
+
+It comes in two forms with the same options and output:
+
+- **`openmtr-cli`** — a small standalone console program. It needs no GUI
+  libraries, so it also installs on servers, and on Windows it is a real
+  console program that shells wait for.
+- **`OpenMTR --report`** — the same mode built into the window app, for when
+  the app is what you already have.
+
+```sh
+openmtr-cli --count 10 1.1.1.1
+openmtr-cli --count 10 --json -6 example.com
+OpenMTR --report --count 10 1.1.1.1
+```
+
+### Installing openmtr-cli
+
+**Linux and macOS**, with the install script. It downloads the build for your
+system from the latest release, checks its SHA-256 checksum and installs it to
+`/usr/local/bin`, or to `~/.local/bin` if it cannot use `sudo`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/x-rated/OpenMTR/main/install-cli.sh | sh
+```
+
+`OPENMTR_VERSION=<tag>` installs a specific release and `OPENMTR_BINDIR=<dir>`
+picks the directory.
+
+**Debian, Ubuntu and derivatives** can use the `.deb` package (amd64 or
+arm64) instead, so the package manager keeps track of it:
+
+```sh
+curl -LO https://github.com/x-rated/OpenMTR/releases/latest/download/openmtr-cli-linux-amd64.deb
+sudo apt install ./openmtr-cli-linux-amd64.deb
+```
+
+The Linux build is linked on Ubuntu 22.04 and needs only glibc 2.35 or newer
+and libstdc++, so it runs on other distributions too: the install script (or
+the plain `openmtr-cli-linux-<arch>.tar.gz`) covers those.
+
+**Windows** — download `openmtr-cli.exe` (AMD64 or ARM64) from the release
+page and put it on your `PATH`.
+
+**macOS** needs Apple Silicon and macOS 13 or newer.
+
+| Option | Meaning |
+| --- | --- |
+| `<target>` | Host name or IP address to trace |
+| `-r`, `--report` | `OpenMTR`: run without a window (required). `openmtr-cli`: accepted for mtr compatibility, always on |
+| `-c`, `--count <N>` | Probes to send to each hop that replies before reporting (default 10) |
+| `-i`, `--interval <sec>` | Seconds between probes to each hop, 0.1–60 (default 1) |
+| `-s`, `--size <bytes>` | ICMP payload size, 64–8192 bytes (default 64) |
+| `-4` / `-6` | Use only IPv4 / only IPv6 (default: IPv4, falling back to IPv6) |
+| `-n`, `--no-dns` | Do not resolve host names of hops |
+| `--no-asn` | Do not look up AS numbers |
+| `-j`, `--json` | Print the report as JSON (same fields as the JSON export, plus the run's settings and `destination_reached`) |
+| `-h`, `--help` / `-v`, `--version` | Show the help / version and exit |
+
+Before counting starts, OpenMTR waits a moment for the route to settle, as the
+window does, so discovery probes are not counted. Counting then ends once every
+hop that has replied has `--count` finished probes, every silent hop has at
+least one, and at least one hop has `--count`. A lost probe only finishes once
+it times out (after 5 s), and its hop waits for that before the next probe,
+which has two consequences:
+
+- Counting ends at the latest `--count` + 1 probe periods plus about 6 s after
+  it starts. Hops that keep losing probes, or a route where no hop replies at
+  all, run to that limit and can end with fewer than `--count` probes.
+- With a small `--count` (under about 5 s of probing), hops that reply keep
+  being probed while the first probes to silent hops time out, so they show
+  more than `--count` in *Sent*.
+
+Exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Report printed; the destination replied |
+| 1 | Report printed; the destination never replied during the run |
+| 2 | Invalid command line |
+| 3 | The target could not be resolved |
+| 4 | The trace could not start (no ICMP socket) |
+| 130 | Interrupted with Ctrl+C; the partial report is still printed |
+
+Platform notes:
+
+- **Windows** — prefer `openmtr-cli.exe` in scripts. `OpenMTR.exe` is a GUI
+  program: batch files wait for it and see its exit code, but an interactive
+  `cmd.exe` or PowerShell prompt does not, so its report appears after the
+  prompt has already come back. To wait there, use
+  `start /wait "" OpenMTR.exe --report 1.1.1.1` in `cmd.exe`, or pipe the
+  output in PowerShell (`OpenMTR.exe --report 1.1.1.1 | Out-String`), which
+  also sets `$LASTEXITCODE`. Piped output is UTF-8; if PowerShell shows
+  non-ASCII characters garbled, run
+  `[Console]::OutputEncoding = [Text.Encoding]::UTF8` first.
+- **macOS** — the window app's report mode is the binary inside the bundle:
+  `/Applications/OpenMTR.app/Contents/MacOS/OpenMTR --report 1.1.1.1`.
+- **Linux** — OpenMTR uses unprivileged ICMP ("ping") sockets. If a
+  distribution disables them, allow them with
+  `sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"`. The AppImage
+  itself needs FUSE (or `--appimage-extract-and-run` without it).
+- ASN lookups use `dig` on macOS and Linux (the `.deb` recommends
+  `bind9-dnsutils`); without it, the ASN column stays empty.
+
+---
+
 ## Building
 
 Releases are built automatically via GitHub Actions on every push to `main` — AMD64 and ARM64 binaries are produced in parallel and uploaded as artifacts. No local Qt installation is needed.
@@ -115,6 +227,12 @@ For a local build you need CMake 3.22+, Ninja, a C++20 compiler and Qt 6:
 - **Linux** — the distribution's `qt6-base-dev` is enough to build and run. CI
   instead compiles Qt from source with `-no-icu`, purely to keep ICU out of the
   AppImage.
+
+A build produces both programs, `OpenMTR` and `openmtr-cli`. `-DOPENMTR_BUILD_CLI=OFF`
+skips the CLI; `-DOPENMTR_BUILD_GUI=OFF` builds only the CLI, which then needs
+just QtCore (a Qt without GUI modules is enough). `packaging/package-cli.sh`
+turns a built `openmtr-cli` into the release files (`.tar.gz`, `.deb`,
+checksums).
 
 The workflow in `.github/workflows/build.yml` documents the exact steps used in CI.
 

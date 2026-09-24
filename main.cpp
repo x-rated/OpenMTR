@@ -2,8 +2,9 @@
 //  main.cpp — application entry point
 //
 //  On Windows, brings up Winsock before anything else (the tracer needs it)
-//  and tears it down on exit. Creates the Qt application object and the main
-//  window, then runs the event loop.
+//  and tears it down on exit. Runs the headless report mode when the command
+//  line asks for it (see cli.cpp); otherwise creates the Qt application
+//  object and the main window, then runs the event loop.
 // ==========================================================================
 
 // ==========================================================================
@@ -12,6 +13,7 @@
 
 // Project headers.
 #include "MainWindow.h"
+#include "cli.h"
 #include "version.h"
 
 #ifdef _WIN32
@@ -135,6 +137,16 @@ int main(int argc, char* argv[])
     WSADATA wsaData;
     WSAStartup(MAKEWORD(2, 2), &wsaData);
 #endif
+
+    // Headless report mode (--report, or --help / --version): no window and
+    // no QApplication at all, so it runs without a display. See cli.cpp.
+    if (isReportModeRequested(argc, argv)) {
+        const int rc = runReportMode(argc, argv, false);
+#ifdef _WIN32
+        WSACleanup();
+#endif
+        return rc;
+    }
 
 #ifdef Q_OS_LINUX
     // Many Linux desktops set QT_QPA_PLATFORMTHEME=gtk3, which pulls the

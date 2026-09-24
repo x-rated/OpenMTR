@@ -173,7 +173,6 @@ static void endMacOsTraceActivity(void*& activity)
 #include <windowsx.h>
 #include <shellapi.h>
 #include <commdlg.h>
-#include <windns.h>
 #include <winreg.h>
 #endif
 
@@ -187,12 +186,9 @@ static void endMacOsTraceActivity(void*& activity)
 //  File-local constants & helpers
 // ==========================================================================
 
-// Logical column order of the results table. Two spacer columns are added on
-// top of these in setupUi().
-static const QStringList COLUMNS = {
-    "Hop", "ASN", "Hostname", "IP", "Loss %", "Sent", "Recv",
-    "Best ms", "Avrg ms", "Wrst ms", "Last ms", "Jttr ms"
-};
+// Logical column order of the results table (see report.h). Two spacer
+// columns are added on top of these in setupUi().
+static const QStringList& COLUMNS = reportColumns();
 
 // kResizeMargin, ovEdgesAt() and ovCursorForEdges() live in MainWindow.h
 // (Q_OS_LINUX section, near TitleBarWidget) so TitleBarWidget can share
@@ -259,18 +255,6 @@ static void copyTextToClipboard(const QString& text)
     if (QClipboard* clipboard = QGuiApplication::clipboard())
         clipboard->setText(text);
 #endif
-}
-
-// Format a duration as H:MM:SS (or M:SS under an hour). Shared by the
-// window-title elapsed display and the exported report's Duration field, so
-// the two never disagree on formatting.
-static QString formatDuration(qint64 ms)
-{
-    qint64 secs = ms / 1000;
-    int h = static_cast<int>(secs / 3600), m = static_cast<int>((secs % 3600) / 60), s = static_cast<int>(secs % 60);
-    return h > 0
-        ? QString("%1:%2:%3").arg(h).arg(m, 2, 10, QChar('0')).arg(s, 2, 10, QChar('0'))
-        : QString("%1:%2").arg(m).arg(s, 2, 10, QChar('0'));
 }
 
 // ==========================================================================
@@ -2756,104 +2740,8 @@ void MainWindow::hideIconTooltip()
 //  ASN lookup
 // ==========================================================================
 
-// True for addresses Team Cymru cannot answer for, so the query is skipped.
-// Parsed rather than prefix-matched: the old "172." test threw away the whole
-// of 172/8 when only 172.16/12 is private, hiding Google and Cloudflare, and
-// it missed 100.64/10 in the other direction. inet_pton rather than
-// QHostAddress because that lives in Qt6::Network, which this app does not
-// link.
-static bool isUnroutableForAsn(const QString& ip)
-{
-    const QByteArray raw = ip.toUtf8();
-
-    in_addr v4{};
-    if (inet_pton(AF_INET, raw.constData(), &v4) == 1) {
-        // Explicit cast: ntohl() returns u_long on Windows, and the MSVC
-        // build compiles with /W4 /WX.
-        const uint32_t a = static_cast<uint32_t>(ntohl(v4.s_addr));
-        return (a & 0xFF000000u) == 0x0A000000u   // 10/8
-            || (a & 0xFFF00000u) == 0xAC100000u   // 172.16/12  (NOT all of 172/8)
-            || (a & 0xFFFF0000u) == 0xC0A80000u   // 192.168/16
-            || (a & 0xFF000000u) == 0x7F000000u   // 127/8 loopback
-            || (a & 0xFFFF0000u) == 0xA9FE0000u   // 169.254/16 link-local
-            || (a & 0xFFC00000u) == 0x64400000u   // 100.64/10 CGNAT
-            || a == 0u;                           // 0.0.0.0
-    }
-
-    in6_addr v6{};
-    if (inet_pton(AF_INET6, raw.constData(), &v6) == 1) {
-        const unsigned char* b = reinterpret_cast<const unsigned char*>(&v6);
-        if ((b[0] & 0xFE) == 0xFC) return true;                  // fc00::/7 ULA
-        if (b[0] == 0xFE && (b[1] & 0xC0) == 0x80) return true;  // fe80::/10 link-local
-        for (int i = 0; i < 16; ++i) if (b[i]) return false;
-        return true;                                             // ::
-    }
-
-    return true;   // not an address we can query for
-}
-
-// Resolve an IP to its ASN via Team Cymru's DNS service. Skips private and
-// link-local ranges. Blocking — must be called off the UI thread.
-QString MainWindow::lookupASN(const QString& ip, bool ipv6)
-{
-    if (ip.isEmpty() || isUnroutableForAsn(ip))
-        return QString();
-
-    QString query;
-    if (!ipv6) {
-        QStringList parts = ip.split('.');
-        if (parts.size() != 4) return QString();
-        std::reverse(parts.begin(), parts.end());
-        query = parts.join('.') + ".origin.asn.cymru.com";
-    } else {
-        struct addrinfo hints = {}, *res = nullptr;
-        hints.ai_family = AF_INET6;
-        hints.ai_flags  = AI_NUMERICHOST;
-        if (getaddrinfo(ip.toStdString().c_str(), nullptr, &hints, &res) != 0) return QString();
-        auto resGuard = std::unique_ptr<addrinfo, decltype(&freeaddrinfo)>(res, freeaddrinfo);
-        auto* sa6 = reinterpret_cast<sockaddr_in6*>(res->ai_addr);
-        QString hex;
-        for (int b = 0; b < 16; ++b)
-            hex += QString("%1").arg(sa6->sin6_addr.s6_addr[b], 2, 16, QChar('0'));
-        QString reversed;
-        for (int i = 31; i >= 0; --i) { reversed += hex[i]; if (i > 0) reversed += '.'; }
-        query = reversed + ".origin6.asn.cymru.com";
-    }
-
-#ifdef Q_OS_WIN
-    PDNS_RECORD pDnsRecord = nullptr;
-    DNS_STATUS status = DnsQuery_W(query.toStdWString().c_str(), DNS_TYPE_TEXT,
-        DNS_QUERY_STANDARD, nullptr, &pDnsRecord, nullptr);
-    if (status != ERROR_SUCCESS || !pDnsRecord) return QString();
-
-    QString result;
-    for (PDNS_RECORD r = pDnsRecord; r; r = r->pNext) {
-        if (r->wType == DNS_TYPE_TEXT && r->Data.TXT.dwStringCount > 0) {
-            QString txt = QString::fromWCharArray(r->Data.TXT.pStringArray[0]);
-            QString asn = txt.split('|').first().trimmed();
-            if (!asn.isEmpty() && asn != "0") result = asn;
-            break;
-        }
-    }
-    DnsFree(pDnsRecord, DnsFreeRecordList);
-    return result;
-#else
-    // No native DNS TXT API used here (unlike Windows' DnsQuery_W); shell out
-    // to the standard `dig` tool instead, which every macOS install ships
-    // with.
-    QProcess proc;
-    proc.start("dig", {"+short", "txt", query});
-    if (proc.waitForFinished(2000)) {
-        QString out = QString::fromUtf8(proc.readAllStandardOutput()).trimmed();
-        if (out.startsWith('"')) out.remove(0, 1);
-        if (out.endsWith('"'))   out.chop(1);
-        QString asn = out.split('|').first().trimmed();
-        if (!asn.isEmpty() && asn != "0")
-            return asn;
-    }
-    return QString();
-#endif
-}
+// The lookup itself (lookupAsn()) lives in report.cpp, shared with report
+// mode.
 
 // Cached ASN for an IP. Returns '-' immediately; on the first request it
 // resolves in the background and fills the cache for next time.
@@ -2866,7 +2754,7 @@ QString MainWindow::getCachedASN(const QString& ip, bool ipv6) const
     if (m_asnPending.insert(key).second) {
         QPointer<MainWindow> self(const_cast<MainWindow*>(this));
         std::thread([self, ip, ipv6, key]() {
-            QString asn = lookupASN(ip, ipv6);
+            QString asn = lookupAsn(ip, ipv6);
             QMetaObject::invokeMethod(qApp, [self, key, asn]() {
                 if (!self) return;
                 self->m_asnCache[key] = asn;
@@ -3200,18 +3088,6 @@ void MainWindow::onWarmupEnd()
 //  Results table & export
 // ==========================================================================
 
-// A probe's status for the tooltip and the export: the engine's own sentence
-// and the number, e.g. "Destination host unreachable, code 11003". The number
-// alone meant nothing to anyone without ipexport.h at hand; the text alone
-// would lose what a Windows report can be compared by.
-static QString describeStatus(unsigned long status, bool ipv6)
-{
-    QString text = QString::fromLatin1(OpenMTRStatusText(status, ipv6));
-    if (text.endsWith(QLatin1Char('.')))
-        text.chop(1);
-    return QStringLiteral("%1, code %2").arg(text).arg(status);
-}
-
 // Rebuild the table rows from the latest engine snapshot. Statistics come
 // straight from the engine — they are reset at reveal, so no baseline math
 // is needed here.
@@ -3224,15 +3100,14 @@ void MainWindow::updateTable()
 
     for (int i = 0; i < rows; ++i) {
         const auto& h = state[i];
-        QString ip      = QString::fromStdWString(addr_to_wstring(h.addr));
-        bool hasAddr    = (h.addr.Ipv4.sin_family != AF_UNSPEC);
-        QString name    = QString::fromStdWString(h.getName());
-        if (hasAddr && name.isEmpty()) name = ip;
-        // Hops without an address show the engine's status text ("Request
-        // timed out.", "Destination host unreachable.", ...) so active ICMP
-        // refusals are visible instead of hiding behind a dash. Before the
-        // first probe completes there is no status yet, hence the dash.
-        if (!hasAddr && name.isEmpty()) name = QStringLiteral("-");
+        const bool hasAddr = (h.addr.Ipv4.sin_family != AF_UNSPEC);
+        const QString asn  = hasAddr
+            ? getCachedASN(QString::fromStdWString(addr_to_wstring(h.addr)),
+                           h.addr.Ipv6.sin6_family == AF_INET6)
+            : QString();
+        // The cell texts come from report.cpp, the same code that report
+        // mode prints with, so the table and every report always agree.
+        const ReportRow row = makeReportRow(i, h, asn);
 
         auto setCell = [&](int col, const QString& text, Qt::Alignment align) {
             auto* item = m_table->item(i, col);
@@ -3241,24 +3116,20 @@ void MainWindow::updateTable()
         };
         constexpr auto C = Qt::AlignCenter | Qt::AlignVCenter;
 
-        setCell(ColHop, QString::number(i + 1), C);
-        setCell(ColAsn, hasAddr ? getCachedASN(ip, h.addr.Ipv6.sin6_family == AF_INET6) : "-", C);
-        setCell(ColHostname, name, C);
-        setCell(ColIp, hasAddr ? ip : "-", C);
+        for (int c = 0; c < ColCount; ++c)
+            setCell(c, row.cells[c], C);
 
         // Rows showing an ICMP status instead of an address merge the
         // Hostname and IP cells so the text sits centred across both; the
         // delegate renders it in the muted shade via the UserRole flag. The
         // underlying IP cell keeps its "-" so text/CSV exports are unchanged.
-        const bool errRow = !hasAddr && name != QLatin1String("-");
+        const bool errRow = row.statusRow;
         if (auto* hostItem = m_table->item(i, ColHostname))
             hostItem->setData(Qt::UserRole, errRow);
         // Multipath / route-change marker for the delegate + Fluent tooltip.
-        const bool multipath = hasAddr && h.altCount > 0;
+        const bool multipath = row.altCount > 0;
         const QString mpTip = multipath
-            ? QString("Also replies: %1 (%2\u00d7)")
-                  .arg(QString::fromStdWString(addr_to_wstring(h.altAddr)))
-                  .arg(h.altCount)
+            ? QString("Also replies: %1 (%2\u00d7)").arg(row.altIp).arg(row.altCount)
             : QString();
         for (int c : {(int)ColHostname, (int)ColIp}) {
             if (auto* it = m_table->item(i, c)) {
@@ -3271,16 +3142,11 @@ void MainWindow::updateTable()
         if (m_table->columnSpan(i, ColHostname) != wantSpan)
             m_table->setSpan(i, ColHostname, 1, wantSpan);
 
-        if (h.xmit == 0) {
-            for (int c = ColLoss; c < ColCount; ++c) setCell(c, "-", C);
-        } else {
-            int loss = 100 - (100 * h.returned / h.xmit);
-
-            setCell(ColLoss, QString::number(loss), C);
-            // Diagnostic: hovering the Loss cell explains what every missing
-            // reply actually was — a genuine timeout, or an anomalous
-            // completion (a reply carrying a non-success ICMP status, or a
-            // soft failure of the send call), with the most recent code.
+        // Diagnostic: hovering the Loss cell explains what every missing
+        // reply actually was — a genuine timeout, or an anomalous completion
+        // (a reply carrying a non-success ICMP status, or a soft failure of
+        // the send call), with the most recent code.
+        if (h.xmit != 0) {
             if (auto* lossItem = m_table->item(i, ColLoss)) {
                 const int timeouts = h.xmit - h.returned - h.anomalyCount;
                 QString tip;
@@ -3293,13 +3159,6 @@ void MainWindow::updateTable()
                 }
                 lossItem->setData(Qt::ToolTipRole, tip.isEmpty() ? QVariant() : QVariant(tip));
             }
-            setCell(ColSent, QString::number(h.xmit), C);
-            setCell(ColRecv, QString::number(h.returned), C);
-            setCell(ColBest, h.returned == 0 ? "-" : QString::number(h.best),      C);
-            setCell(ColAvrg, h.returned == 0 ? "-" : QString::number(h.getAvg()),  C);
-            setCell(ColWrst, h.returned == 0 ? "-" : QString::number(h.worst),     C);
-            setCell(ColLast, h.returned == 0 ? "-" : QString::number(h.last),      C);
-            setCell(ColJttr, h.returned < 2 ? "-" : QString::number(h.getJitter()), C);
         }
     }
 
@@ -3329,118 +3188,62 @@ qint64 MainWindow::currentTestDurationMs() const
     return (m_tracing && m_counting) ? m_elapsed.elapsed() : m_testDurationMs;
 }
 
+// The table as report rows: the cell texts exactly as shown, plus the
+// multipath and anomaly details from the engine — the live engine while a
+// trace runs, its last snapshot after Stop.
+std::vector<ReportRow> MainWindow::reportRows() const
+{
+    const auto st = m_net ? m_net->getCurrentState() : m_finalState;
+    std::vector<ReportRow> rows;
+    for (int i = 0; i < m_table->rowCount(); ++i) {
+        ReportRow r;
+        for (int c = 0; c < ColCount; ++c) {
+            auto* item = m_table->item(i, c);
+            r.cells << (item ? item->text() : QStringLiteral("-"));
+        }
+        auto* hostItem = m_table->item(i, ColHostname);
+        r.statusRow = hostItem && hostItem->data(Qt::UserRole).toBool();
+        if (i < static_cast<int>(st.size())) {
+            const auto& h = st[i];
+            if (h.altCount > 0) {
+                r.altIp    = QString::fromStdWString(addr_to_wstring(h.altAddr));
+                r.altCount = h.altCount;
+            }
+            r.anomalyCount = h.anomalyCount;
+            r.anomalyLast  = h.anomalyLast;
+        }
+        rows.push_back(std::move(r));
+    }
+    return rows;
+}
+
+// Header of Copy/Export: the start of the counting window (falls back to
+// "now" if somehow queried before that, though Copy/Export stay disabled
+// until then in practice) and how long it has run — see
+// currentTestDurationMs().
+ReportInfo MainWindow::reportInfo() const
+{
+    ReportInfo info;
+    info.target     = m_reportTarget;
+    info.started    = m_testStartTime;
+    info.durationMs = currentTestDurationMs();
+    info.ipv6       = m_traceIsV6;
+    return info;
+}
+
 // Machine-readable export: one object per hop, numbers as numbers, missing
 // values ("-") as null. Merged error rows carry the ICMP status text in
 // "hostname" and null in "ip", mirroring the on-screen table.
 QString MainWindow::buildJsonExport() const
 {
-    static const QStringList keys = {
-        "hop", "asn", "hostname", "ip", "loss", "sent", "recv",
-        "best", "avrg", "wrst", "last", "jttr"
-    };
-    // The live engine while a trace runs, its last snapshot after Stop.
-    const auto st = m_net ? m_net->getCurrentState() : m_finalState;
-    QJsonArray hops;
-    for (int i = 0; i < m_table->rowCount(); ++i) {
-        QJsonObject o;
-        for (int c = 0; c < COLUMNS.size(); ++c) {
-            auto* item = m_table->item(i, c);
-            const QString v = item ? item->text() : QString();
-            if (v.isEmpty() || v == QLatin1String("-")) {
-                o[keys[c]] = QJsonValue::Null;
-                continue;
-            }
-            bool numeric = false;
-            const int n = v.toInt(&numeric);
-            o[keys[c]] = numeric ? QJsonValue(n) : QJsonValue(v);
-        }
-        if (i < static_cast<int>(st.size()) && st[i].altCount > 0) {
-            o["alt_ip"]    = QString::fromStdWString(addr_to_wstring(st[i].altAddr));
-            o["alt_count"] = st[i].altCount;
-        }
-        hops.append(o);
-    }
-    QJsonObject root;
-    root["target"]          = m_reportTarget;
-    // Wall-clock time the counting window began (falls back to "now" if
-    // somehow queried before that, though Copy/Export stay disabled until
-    // then in practice) and how long it has run — see currentTestDurationMs().
-    root["test_started"]    = (m_testStartTime.isValid() ? m_testStartTime : QDateTime::currentDateTime()).toString(Qt::ISODate);
-    root["duration_seconds"] = static_cast<qint64>(currentTestDurationMs() / 1000);
-    root["generated"]       = QDateTime::currentDateTime().toString(Qt::ISODate);
-    root["hops"]            = hops;
-    return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    return buildJsonReport(reportInfo(), reportRows());
 }
 
 // Render the current table as a fixed-width ASCII box (for clipboard / .txt),
 // sizing each column to its actual content.
 QString MainWindow::buildTextExport() const
 {
-    const QString& target = m_reportTarget;
-    const int NCOLS = static_cast<int>(COLUMNS.size());
-    std::vector<int> W(NCOLS);
-    for (int c = 0; c < NCOLS; ++c) {
-        int w = static_cast<int>(COLUMNS[c].length());
-        for (int i = 0; i < m_table->rowCount(); ++i) {
-            auto* item = m_table->item(i, c);
-            const int len = static_cast<int>((item ? item->text() : QStringLiteral("-")).length());
-            if (len > w) w = len;
-        }
-        W[c] = w;
-    }
-    auto pad = [](const QString& s, int w) { return s.leftJustified(w, ' '); };
-    QString sep = "+";
-    for (int c = 0; c < NCOLS; ++c) sep += QString(W[c] + 2, '-') + "+";
-    QString out;
-    out += "OpenMTR Export\n";
-    out += QString("Target  : %1\n").arg(target);
-    out += QString("Date    : %1\n").arg((m_testStartTime.isValid() ? m_testStartTime : QDateTime::currentDateTime())
-                                              .toString("yyyy-MM-dd hh:mm:ss"));
-    out += QString("Duration: %1\n\n").arg(formatDuration(currentTestDurationMs()));
-    out += sep + "\n";
-    QString hdr = "|";
-    for (int c = 0; c < NCOLS; ++c) hdr += " " + pad(COLUMNS[c], W[c]) + " |";
-    out += hdr + "\n" + sep + "\n";
-    for (int i = 0; i < m_table->rowCount(); ++i) {
-        auto* hostItem = m_table->item(i, ColHostname);
-        const bool errRow = hostItem && hostItem->data(Qt::UserRole).toBool();
-        QString row = "|";
-        for (int c = 0; c < NCOLS; ++c) {
-            if (errRow && c == ColHostname) {
-                // Error rows merge Hostname+IP into one left-aligned field
-                // spanning the combined width of both columns.
-                const int wSpan = W[ColHostname] + W[ColIp] + 3;
-                row += " " + pad(hostItem->text(), wSpan) + " |";
-                ++c;   // the IP column is consumed by the span
-                continue;
-            }
-            auto* item = m_table->item(i, c);
-            row += " " + pad(item ? item->text() : "-", W[c]) + " |";
-        }
-        out += row + "\n";
-    }
-    out += sep + "\n";
-    // Anomalous probe completions (a reply carrying an uncounted ICMP status,
-    // or a soft failure of the send call) are invisible in the table but
-    // matter when diagnosing unexplained single-packet losses — list them.
-    // After Stop the engine is gone; its last snapshot still has them.
-    {
-        QString notes;
-        const auto st = m_net ? m_net->getCurrentState() : m_finalState;
-        for (int i = 0; i < static_cast<int>(st.size()); ++i)
-            if (st[i].altCount > 0)
-                notes += QString("  Hop %1: replies also arrived from %2 (%3 time(s)) \u2014 route change or per-packet load balancing\n")
-                             .arg(i + 1)
-                             .arg(QString::fromStdWString(addr_to_wstring(st[i].altAddr)))
-                             .arg(st[i].altCount);
-        for (int i = 0; i < static_cast<int>(st.size()); ++i)
-            if (st[i].anomalyCount > 0)
-                notes += QString("  Hop %1: %2 probe(s) ended with unexpected ICMP status/error: %3\n")
-                             .arg(i + 1).arg(st[i].anomalyCount).arg(describeStatus(st[i].anomalyLast, m_traceIsV6));
-        if (!notes.isEmpty())
-            out += "\nNotes:\n" + notes;
-    }
-    return out;
+    return buildTextReport(reportInfo(), reportRows());
 }
 
 // Copy the full text report to the clipboard.

@@ -9,6 +9,13 @@
 #    OpenMTR-Windows-AMD64.zip / OpenMTR-Windows-ARM64.zip -> OpenMTR.exe
 #    OpenMTR-macOS.zip                                     -> OpenMTR.dmg
 #    OpenMTR-Linux-AMD64.zip  / OpenMTR-Linux-ARM64.zip     -> OpenMTR.AppImage
+#  plus openmtr-cli, the command-line report tool, packaged for download:
+#    OpenMTR-CLI-Windows-AMD64.zip / -ARM64.zip -> openmtr-cli.exe
+#    OpenMTR-CLI-macOS.zip  -> openmtr-cli-macos-arm64.tar.gz (+ .sha256)
+#    OpenMTR-CLI-Linux-AMD64.zip / -ARM64.zip
+#                           -> openmtr-cli-linux-<arch>.tar.gz and .deb (+ .sha256)
+#  Attach those inner files to a release under exactly these names:
+#  install-cli.sh downloads them from releases/latest/download/<name>.
 #  The Linux build is packaged only as an AppImage (see the "Assemble
 #  AppImage" step) — an uncompressed squashfs payload bundling every
 #  non-base runtime dependency, double-clickable in file managers that
@@ -66,11 +73,13 @@ jobs:
             runner: windows-latest
             prefix: C:\Qt-static
             artifact: OpenMTR-Windows-AMD64
+            cli_artifact: OpenMTR-CLI-Windows-AMD64
           - arch: arm64
             label: Windows ARM64
             runner: windows-11-arm
             prefix: C:\Qt-static
             artifact: OpenMTR-Windows-ARM64
+            cli_artifact: OpenMTR-CLI-Windows-ARM64
 
     runs-on: ${{ matrix.runner }}
     name: Build (${{ matrix.label }})
@@ -183,19 +192,37 @@ jobs:
           # a CFG binary's DLL characteristics just list the bare word "Guard".
           # /loadconfig is the reliable check: it confirms the guard tables
           # themselves are present, not just a characteristics-flag substring.
-          $loadconfig = dumpbin /loadconfig build\OpenMTR.exe
-          if ($loadconfig -match 'CF Instrumented' -and $loadconfig -match 'FID table present') {
-            Write-Host "Control Flow Guard confirmed present in build\OpenMTR.exe"
-          } else {
-            Write-Error "Control Flow Guard bit is MISSING from build\OpenMTR.exe - /guard:cf/GUARD:CF did not take effect for this target"
-            exit 1
+          foreach ($exe in 'build\OpenMTR.exe', 'build\openmtr-cli.exe') {
+            $loadconfig = dumpbin /loadconfig $exe
+            if ($loadconfig -match 'CF Instrumented' -and $loadconfig -match 'FID table present') {
+              Write-Host "Control Flow Guard confirmed present in $exe"
+            } else {
+              Write-Error "Control Flow Guard bit is MISSING from $exe - /guard:cf/GUARD:CF did not take effect for this target"
+              exit 1
+            }
           }
+
+      - name: Smoke-test openmtr-cli
+        # A console program: runs, answers --version, and traces loopback
+        # (Windows ICMP needs no privileges). Exit 0 = destination replied.
+        shell: pwsh
+        run: |
+          .\build\openmtr-cli.exe --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          .\build\openmtr-cli.exe --count 2 --no-dns --no-asn 127.0.0.1
+          if ($LASTEXITCODE -ne 0) { Write-Error "openmtr-cli exited $LASTEXITCODE"; exit 1 }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}
           path: build\OpenMTR.exe
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.cli_artifact }}
+          path: build\openmtr-cli.exe
 
   # macOS now builds the same way as Windows: a static, feature-trimmed Qt
   # compiled from source (flags in ci/qt-macos.conf, cached by their hash),
@@ -339,6 +366,35 @@ jobs:
             fi
           done < <(find build/OpenMTR.app -type f)
           exit $fail
+
+      - name: openmtr-cli — sign, check and package
+        # Built by the same configure as the app (CMake's OPENMTR_BUILD_CLI).
+        # Ad-hoc signed like the app; arm64 binaries must carry a signature
+        # to run at all. Same minimum-OS bar as the bundle. The loopback
+        # trace needs no privileges on macOS (unprivileged ICMP sockets).
+        run: |
+          codesign --force --sign - build/openmtr-cli
+          declared=$(plutil -extract LSMinimumSystemVersion raw \
+                       build/OpenMTR.app/Contents/Info.plist)
+          minos=$(otool -l build/openmtr-cli | awk '/LC_BUILD_VERSION/{b=1} b && /minos/{print $2; exit}')
+          echo "openmtr-cli requires macOS $minos (bundle declares $declared)"
+          if [ "$(printf '%s\n%s\n' "$declared" "$minos" | sort -V | tail -1)" != "$declared" ]; then
+            echo "::error::openmtr-cli requires macOS $minos, newer than $declared"
+            exit 1
+          fi
+          if otool -L build/openmtr-cli | grep -E 'Qt|libicu'; then
+            echo "::error::openmtr-cli links Qt or ICU dynamically"
+            exit 1
+          fi
+          ./build/openmtr-cli --version
+          ./build/openmtr-cli --count 2 --no-dns --no-asn 127.0.0.1
+          packaging/package-cli.sh build/openmtr-cli macos arm64 cli-dist
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: OpenMTR-CLI-macOS
+          path: cli-dist/*
 
       - name: Package into a DMG
         run: |
@@ -532,7 +588,8 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$HOME/qt-noicu" \
-            -DCMAKE_INSTALL_PREFIX=/usr
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DOPENMTR_BUILD_CLI=OFF
           cmake --build build --parallel
 
       - name: Install & strip
@@ -665,3 +722,109 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: OpenMTR.AppImage
+
+  # openmtr-cli for Linux, as a .tar.gz and a .deb. A job of its own rather
+  # than a by-product of build-linux, for one reason: glibc compatibility.
+  # A binary only runs on a glibc at least as new as the one it was linked
+  # against, and build-linux uses the newest runner (the window app wants
+  # a current desktop stack anyway). The CLI is for servers too, so it is
+  # built on the oldest supported Ubuntu runner against a QtCore-only static
+  # Qt (ci/qt-cli-linux.conf): the result needs only glibc and libstdc++,
+  # and the .deb's Depends (from dpkg-shlibdeps) says which versions.
+  build-cli-linux:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            label: CLI Linux AMD64
+            runner: ubuntu-22.04
+            artifact: OpenMTR-CLI-Linux-AMD64
+          - arch: arm64
+            label: CLI Linux ARM64
+            runner: ubuntu-22.04-arm
+            artifact: OpenMTR-CLI-Linux-ARM64
+
+    runs-on: ${{ matrix.runner }}
+    name: Build (${{ matrix.label }})
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Restore Qt cache
+        id: qt-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/qt-cli
+          key: qt-cli-${{ env.QT_VERSION }}-linux-${{ matrix.arch }}-${{ hashFiles('ci/qt-cli-linux.conf') }}
+
+      - name: Install build dependencies
+        # dpkg-dev: dpkg-shlibdeps, for the .deb's Depends.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build dpkg-dev
+
+      - name: Fetch Qt source
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: |
+          series="${QT_VERSION%.*}"
+          base="https://download.qt.io/official_releases/qt/$series/${QT_VERSION}/submodules"
+          wget -q "$base/qtbase-everywhere-src-${{ env.QT_VERSION }}.tar.xz"
+          tar xf "qtbase-everywhere-src-${{ env.QT_VERSION }}.tar.xz"
+
+      - name: Configure, build & install Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: |
+          # Same flag-file reading as build-linux (see the comment there).
+          mapfile -t QT_FLAGS < <(sed 's/#.*//' "$GITHUB_WORKSPACE/ci/qt-cli-linux.conf" \
+                                  | tr -d '\r' | awk 'NF{$1=$1; print}')
+          echo "Qt flags: ${QT_FLAGS[*]}"
+          cd "qtbase-everywhere-src-${{ env.QT_VERSION }}"
+          ./configure -prefix "$HOME/qt-cli" "${QT_FLAGS[@]}" -- -B "$HOME/qt-build"
+          cmake --build "$HOME/qt-build" --parallel
+          cmake --install "$HOME/qt-build" --strip
+
+      - name: Configure & build
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$HOME/qt-cli" \
+            -DOPENMTR_BUILD_GUI=OFF \
+            -DOPENMTR_BUILD_TESTS=ON
+          cmake --build build --parallel
+          strip build/openmtr-cli
+
+      - name: Engine tests
+        # Ubuntu allows unprivileged ICMP sockets by default; the sysctl only
+        # makes sure of it on the runner, for these and the smoke test below.
+        run: |
+          sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
+          ctest --test-dir build --output-on-failure --no-tests=error
+
+      - name: Check and smoke-test openmtr-cli
+        # Only system libraries may remain (the point of the static Qt), and
+        # it must actually trace.
+        run: |
+          ldd build/openmtr-cli
+          if ldd build/openmtr-cli | grep -Ei 'libQt6|libicu|libglib'; then
+            echo "::error::openmtr-cli links Qt, ICU or GLib dynamically"
+            exit 1
+          fi
+          ./build/openmtr-cli --version
+          ./build/openmtr-cli --count 2 --no-dns --no-asn 127.0.0.1
+
+      - name: Package (.tar.gz, .deb)
+        run: |
+          packaging/package-cli.sh build/openmtr-cli linux ${{ matrix.arch }} cli-dist
+          dpkg-deb --info cli-dist/openmtr-cli-linux-${{ matrix.arch }}.deb
+          # The package must install and work on the system it was built on.
+          sudo apt-get install -y ./cli-dist/openmtr-cli-linux-${{ matrix.arch }}.deb
+          openmtr-cli --version
+          sudo apt-get remove -y openmtr-cli
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.artifact }}
+          path: cli-dist/*

@@ -133,8 +133,9 @@
 #include <unistd.h>
 #endif
 
-// Project — the network engine.
+// Project — the network engine, and the table/report building blocks.
 #include "tracer.h"
+#include "report.h"
 
 // C++ standard library.
 #include <memory>
@@ -1366,14 +1367,7 @@ private:
 //  Results-table building blocks
 // ==========================================================================
 
-// Logical table columns. The two trailing spacer columns sit at ColCount and
-// ColCount + 1 (the first of them is moved to visual position 0 as the left
-// edge padding). Must stay in sync with the COLUMNS string list.
-enum Column {
-    ColHop = 0, ColAsn, ColHostname, ColIp, ColLoss, ColSent, ColRecv,
-    ColBest, ColAvrg, ColWrst, ColLast, ColJttr,
-    ColCount
-};
+// The table's logical columns (enum Column) are declared in report.h.
 
 // Paints the results table: zebra striping, row/cell hover highlight, the
 // packet-loss bar in the Loss column, and themed, elided text elsewhere.
@@ -2260,10 +2254,11 @@ private:
     void    setTracingInputsEnabled(bool enabled);
     void    updateTable();
     qint64  currentTestDurationMs() const;
+    std::vector<ReportRow> reportRows() const;
+    ReportInfo reportInfo() const;
     QString buildTextExport() const;
     QString buildJsonExport() const;
     static bool    isWindowsDarkMode();
-    static QString lookupASN(const QString& ip, bool ipv6);
     QString        getCachedASN(const QString& ip, bool ipv6) const;
     void           updateToolbarResponsiveLayout();
     bool           alignTargetEditToLossBar();
