@@ -42,7 +42,7 @@ permissions:
 
 # Shared configuration.
 env:
-  QT_VERSION: 6.11.1
+  QT_VERSION: 6.12.0
   # No cache-busting counter here on purpose: the Qt caches key off a hash of
   # the configure flags in ci/qt-*.conf, so they invalidate exactly when that
   # configuration changes and never need a manual bump (forgetting one meant
@@ -52,7 +52,8 @@ env:
   # builds link with identical mitigations and codegen (they otherwise resolve
   # different toolsets, e.g. 14.51 vs 14.44). If a job errors that this toolset
   # is unavailable on its runner image, set this to a version present on both
-  # windows-latest and windows-11-arm.
+  # windows-latest and windows-11-vs2026-arm (see the arm64 matrix entry
+  # below for why that's a VS2026-pinned label, not windows-11-arm).
   MSVC_TOOLSET: '14.44'
 
 # Build matrix: one job per target architecture.
@@ -68,7 +69,24 @@ jobs:
             artifact: OpenMTR-Windows-AMD64
           - arch: arm64
             label: Windows ARM64
-            runner: windows-11-arm
+            # actions/runner-images#14602: the floating `windows-11-arm`
+            # label is being migrated to a Visual Studio 2026-based image
+            # during a rollout window (2026-09-21 to 2026-09-30), so which
+            # image an identical run gets is briefly non-deterministic.
+            # Pinned straight to the VS2026 image now — GitHub's own
+            # recommendation in that issue for testing/adopting ahead of
+            # the switch — rather than ride out the ambiguous window and
+            # land on it anyway once the rollout completes.
+            #
+            # NOT verified here: whether MSVC_TOOLSET (pinned below for
+            # reproducible codegen) still exists on this image. VS2026 may
+            # not carry VS2022-era toolsets like 14.44 side by side. If this
+            # job fails with the toolset not found, that's what's happening
+            # — drop MSVC_TOOLSET to see what setup-msvc-dev reports as
+            # available on the image, or check
+            # https://github.com/actions/runner-images/blob/main/images/windows/Windows11-VS2026-Arm64-Readme.md
+            # directly, and update MSVC_TOOLSET (and this comment) to match.
+            runner: windows-11-vs2026-arm
             prefix: C:\Qt-static
             artifact: OpenMTR-Windows-ARM64
 
@@ -105,7 +123,7 @@ jobs:
         if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          # Series (6.11) derived from QT_VERSION (6.11.1), not written out
+          # Series (6.12) derived from QT_VERSION (6.12.0), not written out
           # again: hardcoding it means bumping QT_VERSION alone silently
           # builds a URL like qt/6.11/6.12.0/ that 404s.
           $series = "${{ env.QT_VERSION }}" -replace '\.\d+$', ''
@@ -191,6 +209,34 @@ jobs:
             exit 1
           }
 
+      - name: Verify console subsystem + detached console policy
+        # The CLI mode only behaves as a normal synchronous command (shells
+        # wait for it, $LASTEXITCODE and `>` work) because the exe is a
+        # console-subsystem image, and the GUI only stays free of a console
+        # window when started from Explorer because the embedded manifest
+        # says consoleAllocationPolicy=detached. Both are one CMake property
+        # away from silently regressing (WIN32_EXECUTABLE, or the manifest
+        # not being embedded), with no build error either way - so check the
+        # built binary itself.
+        shell: pwsh
+        run: |
+          # Out-String: one string, so -notmatch is a plain yes/no (on an array of
+          # lines it would return the non-matching lines instead).
+          $headers = dumpbin /headers build\OpenMTR.exe | Out-String
+          if ($headers -notmatch 'subsystem \(Windows CUI\)') {
+            Write-Error "build\OpenMTR.exe is not a console-subsystem image - is WIN32_EXECUTABLE set again?"
+            exit 1
+          }
+          # The manifest is embedded as UTF-8 text; Latin-1 decoding maps
+          # bytes 1:1, so a plain ASCII match works.
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path build\OpenMTR.exe).Path)
+          $text  = [System.Text.Encoding]::Latin1.GetString($bytes)
+          if ($text -notmatch '>detached</consoleAllocationPolicy>') {
+            Write-Error "consoleAllocationPolicy=detached is missing from the manifest embedded in build\OpenMTR.exe"
+            exit 1
+          }
+          Write-Host "Console subsystem and detached console policy confirmed in build\OpenMTR.exe"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
@@ -239,7 +285,7 @@ jobs:
       - name: Fetch Qt source
         if: steps.qt-cache.outputs.cache-hit != 'true'
         run: |
-          # Series (6.11) derived from QT_VERSION (6.11.1) — see the Windows
+          # Series (6.12) derived from QT_VERSION (6.12.0) — see the Windows
           # job for why it isn't written out a second time.
           series="${QT_VERSION%.*}"
           base="https://download.qt.io/official_releases/qt/$series/${QT_VERSION}/submodules"
@@ -265,7 +311,7 @@ jobs:
           # raise the real minimum above what Info.plist declares — the
           # smoke test and minos check below both guard the result.
           ./configure -prefix "$HOME/qt-macos-static" "${QT_FLAGS[@]}" \
-            -- -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -B "$HOME/qt-build"
+            -- -DCMAKE_OSX_DEPLOYMENT_TARGET=14.4 -B "$HOME/qt-build"
           cmake --build "$HOME/qt-build" --parallel
           cmake --install "$HOME/qt-build" --strip
 
@@ -330,8 +376,8 @@ jobs:
             minos=$(otool -l "$f" | awk '/LC_BUILD_VERSION/{b=1} b && /minos/{print $2; exit}')
             [ -n "$minos" ] || continue
             # Full version compare via sort -V, not just the major component:
-            # a library needing 13.4 in a bundle declaring 13.0 still crashes
-            # on 13.0-13.3. sort -V also handles a three-part minos (13.4.1),
+            # a library needing 14.5 in a bundle declaring 14.4 still crashes
+            # on 14.4. sort -V also handles a three-part minos (14.5.1),
             # which splitting into major/minor by hand would truncate.
             if [ "$(printf '%s\n%s\n' "$declared" "$minos" | sort -V | tail -1)" != "$declared" ]; then
               echo "::error::$f requires macOS $minos but the bundle declares $declared"
@@ -478,7 +524,7 @@ jobs:
       - name: Fetch Qt source
         if: steps.qt-cache.outputs.cache-hit != 'true'
         run: |
-          # Series (6.11) derived from QT_VERSION (6.11.1) — see the Windows
+          # Series (6.12) derived from QT_VERSION (6.12.0) — see the Windows
           # job for why it isn't written out a second time.
           series="${QT_VERSION%.*}"
           base="https://download.qt.io/official_releases/qt/$series/${QT_VERSION}/submodules"
@@ -610,8 +656,8 @@ jobs:
                    "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 
           cp out/bin/OpenMTR "$APPDIR/usr/bin/OpenMTR"
-          cp openmtr.desktop "$APPDIR/usr/share/applications/openmtr.desktop"
-          cp app_icon.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/openmtr.png"
+          cp resources/openmtr.desktop "$APPDIR/usr/share/applications/openmtr.desktop"
+          cp resources/app_icon.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/openmtr.png"
 
           # Bundle every dynamic dependency ldd can resolve, except the
           # base glibc/toolchain set assumed present (and required to
@@ -631,8 +677,8 @@ jobs:
           # actual entry point the runtime execs — a real script here
           # (not a bare symlink) so it can point the dynamic linker at
           # the bundled usr/lib before handing off to the real binary.
-          cp openmtr.desktop "$APPDIR/openmtr.desktop"
-          cp app_icon.png "$APPDIR/openmtr.png"
+          cp resources/openmtr.desktop "$APPDIR/openmtr.desktop"
+          cp resources/app_icon.png "$APPDIR/openmtr.png"
           printf '%s\n' \
             '#!/bin/sh' \
             'HERE="$(dirname "$(readlink -f "$0")")"' \

@@ -566,10 +566,10 @@ static uint16_t calculate_checksum(const uint16_t* addr, int count)
         nleft -= 2;
     }
     if (nleft == 1)
-        sum += *(const uint8_t*)w;
+        sum += *reinterpret_cast<const uint8_t*>(w);
     sum  = (sum >> 16) + (sum & 0xFFFF);
     sum += (sum >> 16);
-    return (uint16_t)(~sum);
+    return static_cast<uint16_t>(~sum);
 }
 
 // POSIX counterpart of the Windows dispatch loop above: same per-hop
@@ -595,10 +595,10 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
     }
 
     const bool isV6      = (dest->sa_family == AF_INET6);
-    const int  payloadLen = (int)opts.pingsize;
+    const int  payloadLen = static_cast<int>(opts.pingsize);
 
     // Echo id stamped into every outgoing probe of this trace.
-    const uint16_t echoId = (uint16_t)(getpid() & 0xFFFF);
+    const uint16_t echoId = static_cast<uint16_t>(getpid() & 0xFFFF);
 #ifdef __APPLE__
     // macOS (like the BSDs) delivers a copy of every inbound ICMP message to
     // every open ICMP dgram socket — there is no per-socket demultiplexing
@@ -619,7 +619,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
     const bool filterEchoId = false;
 #endif
 
-    ULONGLONG intervalMs = (ULONGLONG)(opts.interval * 1000);
+    ULONGLONG intervalMs = static_cast<ULONGLONG>(opts.interval * 1000);
     if (intervalMs == 0)
         intervalMs = 1000;
     // See the Windows-side comment above for why 16 ms is added.
@@ -631,11 +631,11 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
 
     m_isV6 = isV6;
     if (isV6) {
-        last_remote_addr6 = ((sockaddr_in6*)dest)->sin6_addr;
-        destAddr6 = *(sockaddr_in6*)dest;
+        last_remote_addr6 = (reinterpret_cast<sockaddr_in6*>(dest))->sin6_addr;
+        destAddr6 = *reinterpret_cast<sockaddr_in6*>(dest);
     } else {
-        last_remote_addr = ((sockaddr_in*)dest)->sin_addr;
-        destAddr4 = *(sockaddr_in*)dest;
+        last_remote_addr = (reinterpret_cast<sockaddr_in*>(dest))->sin_addr;
+        destAddr4 = *reinterpret_cast<sockaddr_in*>(dest);
     }
 
     int fd = isV6 ? ::socket(AF_INET6, SOCK_DGRAM, IPPROTO_ICMPV6)
@@ -704,7 +704,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
     for (int i = 0; i < MAX_HOPS; ++i) {
         PosixHopState& hs = hops[i];
         hs.ttl  = i + 1;
-        hs.t0   = globalT0 + (ULONGLONG)i * 50;
+        hs.t0   = globalT0 + static_cast<ULONGLONG>(i) * 50;
         hs.slot = 0;
     }
 
@@ -758,7 +758,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
     static_assert(MAX_HOPS <= 32, "hop index must fit the top 5 bits of icmp_seq");
     auto submit = [&](PosixHopState& hs) {
         hs.seq++;
-        uint16_t seq  = (uint16_t)(((hs.ttl - 1) << 11) | (hs.seq & 0x7FF));
+        uint16_t seq  = static_cast<uint16_t>(((hs.ttl - 1) << 11) | (hs.seq & 0x7FF));
         hs.sentSeq    = seq;
         hs.sentTime   = GetTickCount64();
         hs.lastProbeTick = hs.sentTime;
@@ -784,7 +784,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
             std::vector<unsigned char> pkt(sizeof(struct icmp6_hdr) + payloadLen, ' ');
             std::memcpy(pkt.data(), &req6, sizeof(struct icmp6_hdr));
 
-            const ssize_t sent = sendProbe(pkt, (sockaddr*)&destAddr6, sizeof(sockaddr_in6));
+            const ssize_t sent = sendProbe(pkt, reinterpret_cast<sockaddr*>(&destAddr6), sizeof(sockaddr_in6));
             if (sent < 0) {
                 failSend(hs, errno);
             }
@@ -811,10 +811,10 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
             std::vector<unsigned char> pkt(ICMP_MINLEN + payloadLen, ' ');
             std::memcpy(pkt.data(), &req4, ICMP_MINLEN);
 
-            uint16_t cksum = calculate_checksum((const uint16_t*)pkt.data(), pkt.size());
+            uint16_t cksum = calculate_checksum(reinterpret_cast<const uint16_t*>(pkt.data()), pkt.size());
             std::memcpy(pkt.data() + 2, &cksum, sizeof(cksum));
 
-            const ssize_t sent = sendProbe(pkt, (sockaddr*)&destAddr4, sizeof(sockaddr_in));
+            const ssize_t sent = sendProbe(pkt, reinterpret_cast<sockaddr*>(&destAddr4), sizeof(sockaddr_in));
             if (sent < 0) {
                 failSend(hs, errno);
             }
@@ -843,7 +843,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
         int off = 8;
         if (len < off + 40)
             return nullptr;
-        uint8_t next = (uint8_t)buf[off + 6];   // IPv6 header's Next Header
+        uint8_t next = static_cast<uint8_t>(buf[off + 6]);   // IPv6 header's Next Header
         off += 40;
         while (next != IPPROTO_ICMPV6) {
             // Every walkable extension header starts with Next Header and
@@ -855,20 +855,20 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                 case IPPROTO_HOPOPTS:
                 case IPPROTO_ROUTING:
                 case IPPROTO_DSTOPTS:
-                    next = (uint8_t)buf[off];
-                    off += ((uint8_t)buf[off + 1] + 1) * 8;
+                    next = static_cast<uint8_t>(buf[off]);
+                    off += (static_cast<uint8_t>(buf[off + 1]) + 1) * 8;
                     break;
                 case IPPROTO_FRAGMENT:
-                    next = (uint8_t)buf[off];
+                    next = static_cast<uint8_t>(buf[off]);
                     off += 8;
                     break;
                 default:
                     return nullptr;         // ESP/unknown — nothing we sent
             }
         }
-        if (off + (int)sizeof(struct icmp6_hdr) > len)
+        if (off + static_cast<int>(sizeof(struct icmp6_hdr)) > len)
             return nullptr;
-        return (const struct icmp6_hdr*)(buf + off);
+        return reinterpret_cast<const struct icmp6_hdr*>(buf + off);
     };
 
     bool anyActive = true;
@@ -934,7 +934,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
         }
         const ULONGLONG nowWait  = GetTickCount64();
         const ULONGLONG rest     = (soonest > nowWait) ? (soonest - nowWait) : 0;
-        int timeoutMs = (int)(rest < 250 ? rest : 250);
+        int timeoutMs = static_cast<int>(rest < 250 ? rest : 250);
 
         int p = ::poll(fds, 2, timeoutMs);
         if (!tracing)
@@ -969,7 +969,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
             while (true) {
                 sockaddr_storage from = {};
                 socklen_t fromlen = sizeof(from);
-                int n = ::recvfrom(fd, readBuf, sizeof(readBuf), 0, (sockaddr*)&from, &fromlen);
+                int n = ::recvfrom(fd, readBuf, sizeof(readBuf), 0, reinterpret_cast<sockaddr*>(&from), &fromlen);
                 if (n < 0) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK)
                         break;
@@ -979,7 +979,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                 if (!isV6) {
                     if (from.ss_family != AF_INET)
                         continue;
-                    sockaddr_in* from_in = (sockaddr_in*)&from;
+                    sockaddr_in* from_in = reinterpret_cast<sockaddr_in*>(&from);
 
                     // On some BSD kernels (incl. macOS) a raw/dgram ICMP read
                     // still carries the leading IPv4 header; on Linux it
@@ -998,7 +998,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                     // short ICMP messages.
                     if (icmp_len < ICMP_MINLEN)
                         continue;
-                    struct icmp* icmp = (struct icmp*)(readBuf + ip_hdr_len);
+                    struct icmp* icmp = reinterpret_cast<struct icmp*>(readBuf + ip_hdr_len);
                     uint16_t seq  = 0;
                     bool valid    = false;
                     bool isReply  = false;
@@ -1016,11 +1016,11 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                         // header, embedded 8 bytes into the payload; that's
                         // where the matching sequence number comes from.
                         if (icmp_len >= 8 + 20 + 8) {
-                            unsigned char ip_first_byte = (unsigned char)readBuf[ip_hdr_len + 8];
+                            unsigned char ip_first_byte = static_cast<unsigned char>(readBuf[ip_hdr_len + 8]);
                             int inner_ip_hdr_len = (ip_first_byte & 0x0F) * 4;
                             if (inner_ip_hdr_len >= 20 && icmp_len >= 8 + inner_ip_hdr_len + 8) {
                                 struct icmp* inner_icmp =
-                                    (struct icmp*)(readBuf + ip_hdr_len + 8 + inner_ip_hdr_len);
+                                    reinterpret_cast<struct icmp*>(readBuf + ip_hdr_len + 8 + inner_ip_hdr_len);
                                 // The quoted original packet is our own echo
                                 // request — its id says whose probe expired.
                                 if (filterEchoId && ntohs(inner_icmp->icmp_id) != echoId)
@@ -1031,11 +1031,11 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                         }
                     } else if (icmp->icmp_type == ICMP_UNREACH) {
                         if (icmp_len >= 8 + 20 + 8) {
-                            unsigned char ip_first_byte = (unsigned char)readBuf[ip_hdr_len + 8];
+                            unsigned char ip_first_byte = static_cast<unsigned char>(readBuf[ip_hdr_len + 8]);
                             int inner_ip_hdr_len = (ip_first_byte & 0x0F) * 4;
                             if (inner_ip_hdr_len >= 20 && icmp_len >= 8 + inner_ip_hdr_len + 8) {
                                 struct icmp* inner_icmp =
-                                    (struct icmp*)(readBuf + ip_hdr_len + 8 + inner_ip_hdr_len);
+                                    reinterpret_cast<struct icmp*>(readBuf + ip_hdr_len + 8 + inner_ip_hdr_len);
                                 // The quoted original packet is our own echo
                                 // request — its id says whose probe expired.
                                 if (filterEchoId && ntohs(inner_icmp->icmp_id) != echoId)
@@ -1052,7 +1052,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                             PosixHopState& hs = hops[hopIndex];
                             if (hs.pending && (hs.sentSeq == seq)) {
                                 ULONGLONG nowRecv = GetTickCount64();
-                                int rtt = (int)(nowRecv - hs.sentTime);
+                                int rtt = static_cast<int>(nowRecv - hs.sentTime);
                                 if (rtt <= 0) rtt = 1;
                                 finish(hs);
 
@@ -1071,11 +1071,11 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                 } else {
                     if (from.ss_family != AF_INET6)
                         continue;
-                    sockaddr_in6* from_in6 = (sockaddr_in6*)&from;
+                    sockaddr_in6* from_in6 = reinterpret_cast<sockaddr_in6*>(&from);
 
-                    if (n < (int)sizeof(struct icmp6_hdr))
+                    if (n < static_cast<int>(sizeof(struct icmp6_hdr)))
                         continue;
-                    struct icmp6_hdr* icmp6 = (struct icmp6_hdr*)readBuf;
+                    struct icmp6_hdr* icmp6 = reinterpret_cast<struct icmp6_hdr*>(readBuf);
                     uint16_t seq  = 0;
                     bool valid    = false;
                     bool isReply  = false;
@@ -1116,7 +1116,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                             PosixHopState& hs = hops[hopIndex];
                             if (hs.pending && (hs.sentSeq == seq)) {
                                 ULONGLONG nowRecv = GetTickCount64();
-                                int rtt = (int)(nowRecv - hs.sentTime);
+                                int rtt = static_cast<int>(nowRecv - hs.sentTime);
                                 if (rtt <= 0) rtt = 1;
                                 finish(hs);
 
@@ -1175,8 +1175,8 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                 for (struct cmsghdr* cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
                     if ((!isV6 && cm->cmsg_level == IPPROTO_IP   && cm->cmsg_type == IP_RECVERR) ||
                         ( isV6 && cm->cmsg_level == IPPROTO_IPV6 && cm->cmsg_type == IPV6_RECVERR)) {
-                        ee = (struct sock_extended_err*)CMSG_DATA(cm);
-                        offender = (sockaddr*)SO_EE_OFFENDER(ee);
+                        ee = reinterpret_cast<struct sock_extended_err*>(CMSG_DATA(cm));
+                        offender = reinterpret_cast<sockaddr*>(SO_EE_OFFENDER(ee));
                         break;
                     }
                 }
@@ -1192,10 +1192,10 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                 bool haveSeq = false;
                 if (!isV6 && n >= ICMP_MINLEN) {
                     haveSeq = true;
-                    seq = ntohs(((struct icmp*)errBuf)->icmp_seq);
-                } else if (isV6 && n >= (int)sizeof(struct icmp6_hdr)) {
+                    seq = ntohs((reinterpret_cast<struct icmp*>(errBuf))->icmp_seq);
+                } else if (isV6 && n >= static_cast<int>(sizeof(struct icmp6_hdr))) {
                     haveSeq = true;
-                    seq = ntohs(((struct icmp6_hdr*)errBuf)->icmp6_seq);
+                    seq = ntohs((reinterpret_cast<struct icmp6_hdr*>(errBuf))->icmp6_seq);
                 }
                 // An entry the kernel made itself (SO_EE_ORIGIN_LOCAL, from
                 // ip_local_error() or ipv6_local_error()) carries no payload,
@@ -1212,7 +1212,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                     continue;
 
                 const ULONGLONG nowRecv = GetTickCount64();
-                int rtt = (int)(nowRecv - hs.sentTime);
+                int rtt = static_cast<int>(nowRecv - hs.sentTime);
                 if (rtt <= 0) rtt = 1;
                 finish(hs);
 
@@ -1222,7 +1222,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                     RecordProbe(hopIndex, true, rtt);
                     if (offender) {
                         if (isV6) {
-                            sockaddr_in6* o6 = (sockaddr_in6*)offender;
+                            sockaddr_in6* o6 = reinterpret_cast<sockaddr_in6*>(offender);
                             IPV6_ADDRESS_EX addrex = {};
                             addrex.sin6_port     = o6->sin6_port;
                             addrex.sin6_flowinfo = o6->sin6_flowinfo;
@@ -1230,7 +1230,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
                             std::memcpy(addrex.sin6_addr, &o6->sin6_addr, 16);
                             SetAddr6(hopIndex, addrex);
                         } else {
-                            SetAddr(hopIndex, ((sockaddr_in*)offender)->sin_addr.s_addr);
+                            SetAddr(hopIndex, (reinterpret_cast<sockaddr_in*>(offender))->sin_addr.s_addr);
                         }
                     }
                 } else {
@@ -1297,7 +1297,7 @@ static void DnsResolverThread(void* p)
     // family — passing the larger sockaddr_in6 size for a v4 hop would be a
     // family/length mismatch that can make the lookup fail silently.
     const bool isV6  = (addr.Ipv6.sin6_family == AF_INET6);
-    sockaddr*  sa    = isV6 ? (sockaddr*)&addr.Ipv6 : (sockaddr*)&addr.Ipv4;
+    sockaddr*  sa    = isV6 ? reinterpret_cast<sockaddr*>(&addr.Ipv6) : reinterpret_cast<sockaddr*>(&addr.Ipv4);
     socklen_t  salen = isV6 ? sizeof(sockaddr_in6)  : sizeof(sockaddr_in);
 
     // Store a result only if the engine is still alive; re-checked for each
@@ -1621,8 +1621,8 @@ void OpenMTRNet::RecordProbe(int at, bool replied, int rtt, unsigned long anomal
         // Jitter: |difference| against the previous reply's RTT; the very
         // first reply has no predecessor and contributes no difference.
         if (m_hops[at].returned > 0)
-            m_hops[at].jitterSum += (rtt > m_hops[at].last) ? (unsigned long)(rtt - m_hops[at].last)
-                                                            : (unsigned long)(m_hops[at].last - rtt);
+            m_hops[at].jitterSum += (rtt > m_hops[at].last) ? static_cast<unsigned long>(rtt - m_hops[at].last)
+                                                            : static_cast<unsigned long>(m_hops[at].last - rtt);
         m_hops[at].last   = rtt;
         m_hops[at].total += rtt;
         if (m_hops[at].returned == 0 || m_hops[at].best > rtt) m_hops[at].best = rtt;

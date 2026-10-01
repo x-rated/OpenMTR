@@ -13,22 +13,15 @@
 
 // Project headers.
 #include "MainWindow.h"
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonArray>
-#include <QVersionNumber>
 #include "version.h"
 #include "tracer.h"
+#include "updatecheck.h"
+#include "versioninfo.h"
 
-// ---------------------------------------------------------------------------
-// Update-check kill switch. At 0, checkForUpdates() (both its call site and
-// body) compiles out entirely — the curl/QProcess/GitHub-API code and its
-// string literals are absent from the binary, not just unreachable. Kept at
-// 0 because the network+TLS profile is suspected of contributing to AV/VT
-// ML false positives (Wacatac) on the Windows build. Flip to 1 to restore;
-// no other change is needed.
-// ---------------------------------------------------------------------------
-#define OPENMTR_ENABLE_UPDATE_CHECK 0
+// Update-check kill switch: see the OPENMTR_ENABLE_UPDATE_CHECK compile
+// definition in CMakeLists.txt (the single place it's set — updatecheck.h
+// reads the same value, so the GUI and the CLI's --report mode can never
+// disagree about whether this feature is on).
 
 #ifdef Q_OS_MAC
 #include <objc/runtime.h>
@@ -66,7 +59,7 @@ static void setMacOsDarkAppearance(WId winId, bool dark)
 
 // Set the native NSWindow subtitle — the small secondary line macOS itself
 // draws under the title bar's title (NSWindow.subtitle, macOS 11+; this
-// project targets 13.0, so no availability check needed). This mirrors what
+// project targets 14.4, so no availability check needed). This mirrors what
 // TitleBarWidget's subtitle label shows on Windows/Linux, but through
 // AppKit's own affordance instead of a custom-drawn label, so the live test
 // duration appears in the title bar in a way that matches native macOS
@@ -155,9 +148,7 @@ static void endMacOsTraceActivity(void*& activity)
 #include <QtCore/QTextStream>
 #include <QtCore/QDateTime>
 #include <QtCore/QPointer>
-#include <QtCore/QSysInfo>
 #include <QtCore/QTimer>
-#include <QtCore/QProcess>
 
 #ifndef Q_OS_WIN
 #include <QtWidgets/QFileDialog>
@@ -172,8 +163,7 @@ static void endMacOsTraceActivity(void*& activity)
 #include <windows.h>
 #include <windowsx.h>
 #include <shellapi.h>
-#include <commdlg.h>
-#include <windns.h>
+#include <shobjidl.h>
 #include <winreg.h>
 #endif
 
@@ -181,18 +171,17 @@ static void endMacOsTraceActivity(void*& activity)
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <memory>
+#include <string>
 #include <thread>
 
 // ==========================================================================
 //  File-local constants & helpers
 // ==========================================================================
 
-// Logical column order of the results table. Two spacer columns are added on
-// top of these in setupUi().
-static const QStringList COLUMNS = {
-    "Hop", "ASN", "Hostname", "IP", "Loss %", "Sent", "Recv",
-    "Best ms", "Avrg ms", "Wrst ms", "Last ms", "Jttr ms"
-};
+// Logical column order of the results table (Column enum, COLUMNS header
+// strings) is defined in report_core.h, shared with the CLI report. Two
+// spacer columns are added on top of these in setupUi().
 
 // kResizeMargin, ovEdgesAt() and ovCursorForEdges() live in MainWindow.h
 // (Q_OS_LINUX section, near TitleBarWidget) so TitleBarWidget can share
@@ -200,12 +189,11 @@ static const QStringList COLUMNS = {
 
 #ifdef Q_OS_LINUX
 // Last-known system light/dark preference on Linux. Populated once from a
-// live query the first time isWindowsDarkMode() runs (Qt >= 6.5:
-// QStyleHints::colorScheme(); older Qt6 uses the palette-inference
-// fallback further down), then kept in sync by whichever live signal
+// live query the first time isWindowsDarkMode() runs
+// (QStyleHints::colorScheme()), then kept in sync by whichever live signal
 // fires for a given desktop — the constructor's colorSchemeChanged
-// handler (Qt >= 6.5) and/or onPortalColorSchemeChanged() (any Qt
-// version; see its own comment for why both exist) — never by re-querying
+// handler and/or onPortalSettingChanged() (see its own comment for why both
+// exist) — never by re-querying
 // colorScheme() again, since some Linux theme integrations let that
 // property go stale after the first transition even while the signal
 // keeps firing correctly.
@@ -259,18 +247,6 @@ static void copyTextToClipboard(const QString& text)
     if (QClipboard* clipboard = QGuiApplication::clipboard())
         clipboard->setText(text);
 #endif
-}
-
-// Format a duration as H:MM:SS (or M:SS under an hour). Shared by the
-// window-title elapsed display and the exported report's Duration field, so
-// the two never disagree on formatting.
-static QString formatDuration(qint64 ms)
-{
-    qint64 secs = ms / 1000;
-    int h = static_cast<int>(secs / 3600), m = static_cast<int>((secs % 3600) / 60), s = static_cast<int>(secs % 60);
-    return h > 0
-        ? QString("%1:%2:%3").arg(h).arg(m, 2, 10, QChar('0')).arg(s, 2, 10, QChar('0'))
-        : QString("%1:%2").arg(m).arg(s, 2, 10, QChar('0'));
 }
 
 // ==========================================================================
@@ -376,13 +352,10 @@ MainWindow::MainWindow(QWidget* parent)
 
 #if defined(Q_OS_LINUX) || defined(Q_OS_MAC)
     // Windows gets its light/dark switch via WM_SETTINGCHANGE in
-    // nativeEvent(); on Linux and macOS, Qt >= 6.5's
-    // QStyleHints::colorSchemeChanged is the equivalent, firing only on a
-    // genuine OS preference change (XDG portal / gtk3 on Linux, Cocoa
-    // appearance observer on macOS), never just because the in-app theme
-    // button has since diverged from it. Version-guarded since both CI
-    // builds are past 6.5 but a local Qt might not be.
-#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    // nativeEvent(); on Linux and macOS, QStyleHints::colorSchemeChanged is
+    // the equivalent, firing only on a genuine OS preference change (XDG
+    // portal / gtk3 on Linux, Cocoa appearance observer on macOS), never just
+    // because the in-app theme button has since diverged from it.
     connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged,
             this, [this](Qt::ColorScheme scheme) {
         const bool newDark = (scheme == Qt::ColorScheme::Dark);
@@ -393,7 +366,6 @@ MainWindow::MainWindow(QWidget* parent)
         if (newDark) applyDarkTheme();
         else          applyLightTheme();
     });
-#endif
 #endif
 #ifdef Q_OS_LINUX
     // Belt-and-suspenders alongside the QStyleHints connect above:
@@ -487,96 +459,29 @@ unsigned MainWindow::getPingSize() const noexcept { return static_cast<unsigned>
 //  Update checker
 // ==========================================================================
 
-// One-shot check against the GitHub Releases API, done via a short-lived
-// `curl` subprocess rather than Qt6Network in-process: statically linking
-// Qt6Network purely for a version check gives Windows binaries a
-// network+TLS profile that AV/ML heuristics associate with downloader/C2
-// behaviour, and has triggered false positives here before. Routing the
-// HTTPS request through curl.exe — a binary AV/EDR vendors already
-// allowlist — means OPENMTR.EXE itself never performs a TLS handshake or
-// carries a network stack, so there's nothing left for that heuristic to
-// key off. Qt6Network is dropped from this file and CMakeLists.txt
-// entirely as a result. QProcess::start() is used (never a shell), and the
-// curl path is always an explicit absolute path resolved ourselves —
-// never a bare "curl" string, since unqualified PATH lookup is
-// platform-inconsistent and has had a real security advisory against it.
-//
-// Fires once shortly after startup; failures (curl missing, offline,
-// GitHub down, unexpected response shape) are silently ignored. A newer
-// release triggers showUpdateDialog() immediately rather than leaving the
-// user to notice the toolbar badge on their own.
+// Fires once shortly after startup; runs on a background thread since it
+// blocks on the curl subprocess, then marshals its result back onto the
+// GUI thread via qApp. Failures (curl missing, offline, GitHub down,
+// unexpected response shape) are silently ignored — see
+// checkForUpdateBlocking() in updatecheck.h. A newer release triggers
+// showUpdateDialog() immediately rather than leaving the user to notice the
+// toolbar badge on their own.
 void MainWindow::checkForUpdates()
 {
 #if OPENMTR_ENABLE_UPDATE_CHECK
-#ifdef Q_OS_WIN
-    // Shipped inbox since Windows 10 build 17063 (the 1803 feature
-    // update); hardcoded rather than PATH-searched so a same-named
-    // binary earlier in PATH can never be picked up instead.
-    static const QString curlPath = QStringLiteral("C:/Windows/System32/curl.exe");
-#elif defined(Q_OS_MACOS)
-    // Apple ships its own curl at this fixed path on every supported
-    // macOS release.
-    static const QString curlPath = QStringLiteral("/usr/bin/curl");
-#else
-    // No single well-known path is guaranteed across Linux distros, so
-    // resolve it the same way a shell's PATH lookup would - once, via
-    // Qt's own API - rather than trusting an unqualified "curl" string
-    // to QProcess's own PATH search.
-    static const QString curlPath = QStandardPaths::findExecutable(QStringLiteral("curl"));
-#endif
-    if (curlPath.isEmpty() || !QFileInfo::exists(curlPath)) return;
-
-    if (m_updateProcess) return; // already in flight (shouldn't happen; fires once)
-    m_updateProcess = new QProcess(this);
-    m_updateProcess->setProgram(curlPath);
-    m_updateProcess->setArguments({
-        QStringLiteral("-s"),                 // silent - no progress meter on stdout
-        QStringLiteral("-L"),                 // follow redirects
-        QStringLiteral("--max-time"), QStringLiteral("10"),
-        QStringLiteral("-A"), QStringLiteral("OpenMTR"),
-        QStringLiteral("-H"), QStringLiteral("Accept: application/vnd.github+json"),
-        QStringLiteral("https://api.github.com/repos/x-rated/OpenMTR/releases/latest"),
-    });
-
-    connect(m_updateProcess, &QProcess::finished, this,
-            [this](int exitCode, QProcess::ExitStatus status) {
-        QProcess* proc = m_updateProcess;
-        m_updateProcess = nullptr;
-        proc->deleteLater();
-        if (status != QProcess::NormalExit || exitCode != 0) return;
-
-        const auto doc = QJsonDocument::fromJson(proc->readAllStandardOutput());
-        if (!doc.isObject()) return;
-        const QJsonObject obj = doc.object();
-
-        QString tag = obj.value(QStringLiteral("tag_name")).toString();
-        if (tag.startsWith(QLatin1Char('v'))) tag.remove(0, 1);
-        if (tag.isEmpty() || obj.value(QStringLiteral("draft")).toBool()
-                           || obj.value(QStringLiteral("prerelease")).toBool())
-            return;
-
-        const QVersionNumber latest  = QVersionNumber::fromString(tag);
-        const QVersionNumber current = QVersionNumber::fromString(
-            QStringLiteral(OPENMTR_VERSION));
-        if (latest.isNull() || latest <= current) return;
-
-        const QString htmlUrl = obj.value(QStringLiteral("html_url")).toString();
-        // Belt-and-braces even though ovOpenWebUrl() already refuses
-        // anything but http/https before ever calling QDesktopServices.
-        if (!htmlUrl.startsWith(QLatin1String("https://github.com/")))
-            return;
-
-        m_updateAvailable  = true;
-        m_updateVersion    = tag;
-        m_updateReleaseUrl = htmlUrl;
-        if (m_updateBadge) m_updateBadge->show();
-        showUpdateDialog();
-    });
-
-    // start(), never startCommand()/a shell - arguments are passed as an
-    // argv array, so there is no shell-quoting/injection surface even
-    // though every argument here is a compile-time literal anyway.
-    m_updateProcess->start();
+    QPointer<MainWindow> self(this);
+    std::thread([self]() {
+        const UpdateInfo info = checkForUpdateBlocking();
+        if (!info.available) return;
+        QMetaObject::invokeMethod(qApp, [self, info]() {
+            if (!self) return;
+            self->m_updateAvailable  = true;
+            self->m_updateVersion    = info.version;
+            self->m_updateReleaseUrl = info.url;
+            if (self->m_updateBadge) self->m_updateBadge->show();
+            self->showUpdateDialog();
+        }, Qt::QueuedConnection);
+    }).detach();
 #endif // OPENMTR_ENABLE_UPDATE_CHECK
 }
 
@@ -701,7 +606,7 @@ void MainWindow::setupUi()
     pingSizeLabel->setObjectName("toolLabel");
     tbLayout->addWidget(pingSizeLabel);
 
-    m_pingSizeBox = new QSpinBox(this);
+    m_pingSizeBox = new PingSizeSpinBox(this);   // see its comment: Qt 6.12 hides the text otherwise
     m_pingSizeBox->setObjectName("pingSizeBox");
     m_pingSizeBox->setRange(64, 8192); m_pingSizeBox->setValue(64);
     m_pingSizeBox->setButtonSymbols(QAbstractSpinBox::NoButtons);
@@ -816,16 +721,16 @@ void MainWindow::setupUi()
     installMacMenuBar();
 #endif
 
+    // Tooltip show delay (icon buttons and table cells): tooltipDelayMs(),
+    // applied at each start() so it follows the system setting.
     m_iconTipTimer.setSingleShot(true);
-    m_iconTipTimer.setInterval(600);
     connect(&m_iconTipTimer, &QTimer::timeout, this, [this]() {
         if (m_iconTipPending)
             showIconTooltip(m_iconTipPending, m_iconTipText);
     });
 
-    // Cell tooltip: same 600 ms delay; captures its position once on show.
+    // Cell tooltip: same delay; captures its position once on show.
     m_cellTipTimer.setSingleShot(true);
-    m_cellTipTimer.setInterval(600);
     connect(&m_cellTipTimer, &QTimer::timeout, this, [this]() {
         if (!m_cellTipHover.isValid()) return;
         const QString tip = cellTooltipText(m_cellTipHover);
@@ -1082,7 +987,7 @@ bool MainWindow::isWindowsDarkMode()
         L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
         L"AppsUseLightTheme", RRF_RT_DWORD, nullptr, &value, &size);
     return value == 0;
-#elif defined(Q_OS_LINUX) && QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+#elif defined(Q_OS_LINUX)
     // See s_linuxSystemDarkCache above: only ever queried live once, here,
     // on first use — every update after that comes from the
     // colorSchemeChanged signal handler instead.
@@ -1091,16 +996,8 @@ bool MainWindow::isWindowsDarkMode()
         s_linuxSystemDarkCacheValid = true;
     }
     return s_linuxSystemDarkCache;
-#elif QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
-    // QStyleHints::colorScheme()/Qt::ColorScheme were added in Qt 6.5.
-    return QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark;
 #else
-    // Older Qt6 (e.g. some distro-packaged Linux builds): no direct "is the
-    // system in dark mode" query, so infer it from the default palette —
-    // a dark theme's window background reads darker than its window text.
-    const QPalette pal = QGuiApplication::palette();
-    return pal.color(QPalette::WindowText).lightness() >
-           pal.color(QPalette::Window).lightness();
+    return QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark;
 #endif
 }
 
@@ -1426,13 +1323,10 @@ void MainWindow::showAboutDialog()
 {
     if (m_updateBadge) m_updateBadge->hide();
 
-    const QString msg = QString("Version %1 (%2) · Qt %3\n\n"
+    const QString msg = QString("Version %1\n\n"
             "Continuously traces the route to a host and shows per-hop latency and packet loss statistics in real time.\n\n"
             "© slamb.eu · GPL-2.0 license")
-        .arg(OPENMTR_VERSION)
-        .arg(QSysInfo::buildCpuArchitecture().toUpper()
-                 .replace("X86_64", "AMD64"))
-        .arg(QT_VERSION_STR);
+        .arg(openMtrVersionLine());
 
     MicaDialog::show(this,
         "OpenMTR",
@@ -2138,8 +2032,9 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
     // cells is shown through the same Win11Tooltip used by the caption
     // buttons, and the default QToolTip is suppressed.
     if (m_table && obj == m_table->viewport()) {
-        // Cell tooltips use the same 600 ms show delay as the caption/icon
-        // tooltips (rather than Qt's own ToolTip timing). The position is
+        // Cell tooltips use the same show delay as the caption/icon tooltips
+        // (tooltipDelayMs()) and are drawn by Win11Tooltip rather than Qt's
+        // own ToolTip timing. The position is
         // captured once when the tooltip appears and is NOT updated while the
         // pointer keeps moving over the same cell — per WinUI, a tooltip does
         // not follow the pointer. Moving to a different cell restarts the
@@ -2152,7 +2047,7 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
                 m_cellTipTimer.stop();
                 if (m_cellTip) { m_cellTip->hide(); m_tipIndex = QPersistentModelIndex(); }
                 if (idx.isValid() && !cellTooltipText(idx).isEmpty())
-                    m_cellTipTimer.start();   // 600 ms, single shot
+                    m_cellTipTimer.start(tooltipDelayMs());   // single shot
             }
         }
         if (event->type() == QEvent::ToolTip)
@@ -2172,14 +2067,14 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
         case QEvent::Enter:
             m_iconTipPending = iconBtn;
             m_iconTipText    = tipText;
-            m_iconTipTimer.start();
+            m_iconTipTimer.start(tooltipDelayMs());
             break;
         case QEvent::FocusIn: {
             const auto reason = static_cast<QFocusEvent*>(event)->reason();
             if (reason == Qt::TabFocusReason || reason == Qt::BacktabFocusReason) {
                 m_iconTipPending = iconBtn;
                 m_iconTipText    = tipText;
-                m_iconTipTimer.start();
+                m_iconTipTimer.start(tooltipDelayMs());
             }
             break;
         }
@@ -2756,125 +2651,12 @@ void MainWindow::hideIconTooltip()
 //  ASN lookup
 // ==========================================================================
 
-// True for addresses Team Cymru cannot answer for, so the query is skipped.
-// Parsed rather than prefix-matched: the old "172." test threw away the whole
-// of 172/8 when only 172.16/12 is private, hiding Google and Cloudflare, and
-// it missed 100.64/10 in the other direction. inet_pton rather than
-// QHostAddress because that lives in Qt6::Network, which this app does not
-// link.
-static bool isUnroutableForAsn(const QString& ip)
-{
-    const QByteArray raw = ip.toUtf8();
-
-    in_addr v4{};
-    if (inet_pton(AF_INET, raw.constData(), &v4) == 1) {
-        // Explicit cast: ntohl() returns u_long on Windows, and the MSVC
-        // build compiles with /W4 /WX.
-        const uint32_t a = static_cast<uint32_t>(ntohl(v4.s_addr));
-        return (a & 0xFF000000u) == 0x0A000000u   // 10/8
-            || (a & 0xFFF00000u) == 0xAC100000u   // 172.16/12  (NOT all of 172/8)
-            || (a & 0xFFFF0000u) == 0xC0A80000u   // 192.168/16
-            || (a & 0xFF000000u) == 0x7F000000u   // 127/8 loopback
-            || (a & 0xFFFF0000u) == 0xA9FE0000u   // 169.254/16 link-local
-            || (a & 0xFFC00000u) == 0x64400000u   // 100.64/10 CGNAT
-            || a == 0u;                           // 0.0.0.0
-    }
-
-    in6_addr v6{};
-    if (inet_pton(AF_INET6, raw.constData(), &v6) == 1) {
-        const unsigned char* b = reinterpret_cast<const unsigned char*>(&v6);
-        if ((b[0] & 0xFE) == 0xFC) return true;                  // fc00::/7 ULA
-        if (b[0] == 0xFE && (b[1] & 0xC0) == 0x80) return true;  // fe80::/10 link-local
-        for (int i = 0; i < 16; ++i) if (b[i]) return false;
-        return true;                                             // ::
-    }
-
-    return true;   // not an address we can query for
-}
-
-// Resolve an IP to its ASN via Team Cymru's DNS service. Skips private and
-// link-local ranges. Blocking — must be called off the UI thread.
-QString MainWindow::lookupASN(const QString& ip, bool ipv6)
-{
-    if (ip.isEmpty() || isUnroutableForAsn(ip))
-        return QString();
-
-    QString query;
-    if (!ipv6) {
-        QStringList parts = ip.split('.');
-        if (parts.size() != 4) return QString();
-        std::reverse(parts.begin(), parts.end());
-        query = parts.join('.') + ".origin.asn.cymru.com";
-    } else {
-        struct addrinfo hints = {}, *res = nullptr;
-        hints.ai_family = AF_INET6;
-        hints.ai_flags  = AI_NUMERICHOST;
-        if (getaddrinfo(ip.toStdString().c_str(), nullptr, &hints, &res) != 0) return QString();
-        auto resGuard = std::unique_ptr<addrinfo, decltype(&freeaddrinfo)>(res, freeaddrinfo);
-        auto* sa6 = reinterpret_cast<sockaddr_in6*>(res->ai_addr);
-        QString hex;
-        for (int b = 0; b < 16; ++b)
-            hex += QString("%1").arg(sa6->sin6_addr.s6_addr[b], 2, 16, QChar('0'));
-        QString reversed;
-        for (int i = 31; i >= 0; --i) { reversed += hex[i]; if (i > 0) reversed += '.'; }
-        query = reversed + ".origin6.asn.cymru.com";
-    }
-
-#ifdef Q_OS_WIN
-    PDNS_RECORD pDnsRecord = nullptr;
-    DNS_STATUS status = DnsQuery_W(query.toStdWString().c_str(), DNS_TYPE_TEXT,
-        DNS_QUERY_STANDARD, nullptr, &pDnsRecord, nullptr);
-    if (status != ERROR_SUCCESS || !pDnsRecord) return QString();
-
-    QString result;
-    for (PDNS_RECORD r = pDnsRecord; r; r = r->pNext) {
-        if (r->wType == DNS_TYPE_TEXT && r->Data.TXT.dwStringCount > 0) {
-            QString txt = QString::fromWCharArray(r->Data.TXT.pStringArray[0]);
-            QString asn = txt.split('|').first().trimmed();
-            if (!asn.isEmpty() && asn != "0") result = asn;
-            break;
-        }
-    }
-    DnsFree(pDnsRecord, DnsFreeRecordList);
-    return result;
-#else
-    // No native DNS TXT API used here (unlike Windows' DnsQuery_W); shell out
-    // to the standard `dig` tool instead, which every macOS install ships
-    // with.
-    QProcess proc;
-    proc.start("dig", {"+short", "txt", query});
-    if (proc.waitForFinished(2000)) {
-        QString out = QString::fromUtf8(proc.readAllStandardOutput()).trimmed();
-        if (out.startsWith('"')) out.remove(0, 1);
-        if (out.endsWith('"'))   out.chop(1);
-        QString asn = out.split('|').first().trimmed();
-        if (!asn.isEmpty() && asn != "0")
-            return asn;
-    }
-    return QString();
-#endif
-}
-
-// Cached ASN for an IP. Returns '-' immediately; on the first request it
-// resolves in the background and fills the cache for next time.
+// lookupASN()/isUnroutableForAsn() now live in asncache.h/.cpp (needed by
+// both the GUI and the CLI report mode). m_asnCache is an AsnCache — see
+// there for how the thread-safe caching/pending bookkeeping works.
 QString MainWindow::getCachedASN(const QString& ip, bool ipv6) const
 {
-    auto key = ip.toStdString();
-    auto it  = m_asnCache.find(key);
-    if (it != m_asnCache.end()) return it->second.isEmpty() ? "-" : it->second;
-
-    if (m_asnPending.insert(key).second) {
-        QPointer<MainWindow> self(const_cast<MainWindow*>(this));
-        std::thread([self, ip, ipv6, key]() {
-            QString asn = lookupASN(ip, ipv6);
-            QMetaObject::invokeMethod(qApp, [self, key, asn]() {
-                if (!self) return;
-                self->m_asnCache[key] = asn;
-                self->m_asnPending.erase(key);
-            }, Qt::QueuedConnection);
-        }).detach();
-    }
-    return "-";
+    return m_asnCache.get(ip, ipv6);
 }
 
 // ==========================================================================
@@ -2900,8 +2682,14 @@ void MainWindow::onStartStop()
         // well after this point. Only if a trace was actually running: a
         // Stop before the name resolved leaves the previous trace's table
         // and report on screen, and its duration must stay with it.
-        if (m_net)
+        if (m_net) {
             m_testDurationMs = m_counting ? m_elapsed.elapsed() : 0;
+            // The 1 s timer may not have ticked since the last whole second,
+            // so push the frozen value to the title bar now — otherwise it
+            // could lag up to a second behind the Duration in the reports.
+            if (m_counting)
+                updateTitleSubtitle(formatDuration(m_testDurationMs));
+        }
         m_tracing  = false;
         m_counting = false;
         m_refreshTimer->stop();
@@ -2916,9 +2704,13 @@ void MainWindow::onStartStop()
         if (m_net) {
             updateTable();
             m_finalState = m_net->getCurrentState();
+            // Freeze the rows too, from the cache as it stands right now —
+            // see the comment above buildTextExport()/buildJsonExport() for
+            // why this must happen before the cache is cleared below.
+            m_finalRows = computeReportRows(m_finalState,
+                [this](const QString& ip, bool v6) { return getCachedASN(ip, v6); });
         }
         m_asnCache.clear();
-        m_asnPending.clear();
         if (m_stack->currentIndex() == 1)
             m_stack->setCurrentIndex(0);
 
@@ -3013,6 +2805,7 @@ void MainWindow::onStartStop()
                     self->m_counting = false;
                     self->m_testStartTime = QDateTime();
                     self->m_testDurationMs = 0;
+                    self->m_shownDurationMs = 0;
                     self->m_table->setRowCount(0);
                     self->m_stack->setCurrentIndex(1);
                     self->m_copyBtn->setEnabled(false);
@@ -3027,8 +2820,7 @@ void MainWindow::onStartStop()
                     self->m_warmupTimer->start();
                     self->m_elapsed.start();
                     ++self->m_warmupGen;
-                    self->m_warmupFingerprint.clear();
-                    self->m_warmupStableCount = 0;
+                    self->m_warmupFp = WarmupFingerprint{};
                 }, Qt::QueuedConnection);
             }).detach();
         });
@@ -3059,7 +2851,10 @@ void MainWindow::onElapsedTimer()
     // the title bar's subtitle only. The OS window title stays fixed at the app
     // name — updating it every second would churn the Alt+Tab entry, taskbar
     // tooltip and screen-reader announcements once a second.
-    updateTitleSubtitle(formatDuration(m_elapsed.elapsed()));
+    // Remember exactly what is shown, so a Copy/Export made while the test
+    // runs reports the same duration as the title bar instead of a fresher one.
+    m_shownDurationMs = m_elapsed.elapsed();
+    updateTitleSubtitle(formatDuration(m_shownDurationMs));
 }
 
 // Warm-up state machine. Waits until the discovered route holds steady and
@@ -3069,18 +2864,10 @@ void MainWindow::onElapsedTimer()
 void MainWindow::onWarmupEnd()
 {
     if (!m_net) return;
-    constexpr qint64 kWarmupDeadlineMs = 12000;
-    // The route fingerprint (hop count plus every hop's address) must hold
-    // steady for this many 250 ms ticks before we dismiss the overlay.
-    // Responding hops probe on a ~1 s cycle, so the window spans one full
-    // cycle with margin; silent hops (5 s timeout cycles) are covered by the
-    // per-hop guard below rather than by this window.
-    constexpr int    kWarmupStableTicks = 5;
-    const bool deadlineReached = m_elapsed.elapsed() >= kWarmupDeadlineMs;
 
     int maxHops   = m_net->GetMax();
     auto state    = m_net->getCurrentState();
-    int checkHops = std::min(maxHops, (int)state.size());
+    int checkHops = std::min(maxHops, static_cast<int>(state.size()));
 
     // Warm the ASN cache as addresses appear, so the HTTP lookups run
     // concurrently with route discovery and are typically resolved by the
@@ -3095,84 +2882,30 @@ void MainWindow::onWarmupEnd()
         QTimer::singleShot(250, this, [this, gen]() { if (m_warmupGen == gen) onWarmupEnd(); });
     };
 
-    if (!deadlineReached) {
-        // Fingerprint the discovered route: hop count plus every hop's
-        // address. Requiring the whole fingerprint — not just the count — to
-        // hold steady also catches middle hops that are still filling in
-        // while the destination has already answered. An undiscovered route
-        // (hop count pinned at the ceiling) needs no special case: the
-        // fingerprint plus the per-hop guard below settle it as well, so
-        // even an unreachable target gets a complete, stable reveal. The
-        // deadline is only a backstop for routes that never stop changing.
-        QByteArray fp;
-        fp.append(static_cast<char>(checkHops));
-        for (int i = 0; i < checkHops; ++i) {
-            const auto& a = state[i].addr;
-            if (a.Ipv4.sin_family == AF_INET)
-                fp.append(reinterpret_cast<const char*>(&a.Ipv4.sin_addr),
-                          sizeof(a.Ipv4.sin_addr));
-            else if (a.Ipv6.sin6_family == AF_INET6)
-                fp.append(reinterpret_cast<const char*>(&a.Ipv6.sin6_addr),
-                          sizeof(a.Ipv6.sin6_addr));
-            else
-                fp.append('\0');
-        }
-        // Any change to the route restarts the stability window.
-        if (fp != m_warmupFingerprint) {
-            m_warmupFingerprint = fp;
-            m_warmupStableCount = 1;
-            waitMore();
-            return;
-        }
-        if (++m_warmupStableCount < kWarmupStableTicks) {
-            waitMore();
-            return;
-        }
-        // Every hop we are about to show must have either answered at least
-        // once or sat through two full probe windows without answering.
-        // xmit increments only after IcmpSendEcho2 returns, so for a silent
-        // hop xmit >= 2 means two complete 5 s timeouts — it is almost
-        // certainly a genuinely silent hop, not one whose first reply is
-        // still in flight and would pop into the table after the reveal.
-        for (int i = 0; i < checkHops; ++i) {
-            if (state[i].returned == 0 && state[i].xmit < 2) { waitMore(); return; }
-        }
+    // Route-fingerprint stability + per-hop guard (or the 12 s deadline) —
+    // see report_core.h's warmupRouteSettled() for the exact conditions.
+    // Shared with the CLI's --report mode so both wait for the same signal
+    // before a single statistic is counted.
+    if (!warmupRouteSettled(m_warmupFp, state, checkHops, m_elapsed.elapsed())) {
+        waitMore();
+        return;
     }
 
     QTimer::singleShot(400, this, [this, gen]() {
         if (!m_net || !m_tracing || m_warmupGen != gen) return;
         auto* pollAsn = new QTimer(this);
         pollAsn->setInterval(150);
-        // Reverse-DNS progress trackers: highest resolved-name count seen so far
-        // and how many ticks have passed with no new name. Lets us give fast PTR
-        // records a moment to land without ever waiting on hops that have no PTR.
-        auto dnsSeen  = std::make_shared<int>(-1);
-        auto dnsStall = std::make_shared<int>(0);
-        connect(pollAsn, &QTimer::timeout, this, [this, gen, pollAsn, dnsSeen, dnsStall]() {
+        auto dns = std::make_shared<DnsSettle>();
+        connect(pollAsn, &QTimer::timeout, this, [this, gen, pollAsn, dns]() {
             if (!m_net || !m_tracing || m_warmupGen != gen) {
                 pollAsn->stop(); pollAsn->deleteLater(); return;
             }
 
-            // Consider reverse-DNS "settled" when every addressed hop shows a
-            // name other than its bare IP, or when no new name has appeared for
-            // a few ticks (the remaining hops simply have no PTR record). This
-            // never blocks on a result that isn't coming.
             auto snap = m_net->getCurrentState();
-            int addressed = 0, named = 0;
-            for (auto& h : snap) {
-                if (h.addr.Ipv4.sin_family == AF_UNSPEC) continue;
-                ++addressed;
-                if (h.getName() != addr_to_wstring(h.addr)) ++named;
-            }
-            bool dnsSettled;
-            if (addressed == 0 || named >= addressed)      dnsSettled = true;
-            else if (*dnsSeen < 0)      { *dnsSeen = named; *dnsStall = 0; dnsSettled = false; }
-            else if (named > *dnsSeen)  { *dnsSeen = named; *dnsStall = 0; dnsSettled = false; }
-            else                          dnsSettled = (++*dnsStall >= 3);   // ~450 ms without a new name
-
-            if ((!m_asnPending.empty() || !dnsSettled) && m_elapsed.elapsed() < 16000) return;
+            if (!dnsAndAsnSettled(*dns, snap, m_asnCache.hasPending(), m_elapsed.elapsed()))
+                return;
             pollAsn->stop(); pollAsn->deleteLater();
-            m_asnPending.clear();
+            m_asnCache.clearPending();
             // Restart the engine's statistics so every displayed figure
             // (Loss/Sent/Recv and the RTT columns) describes the counting
             // window only, instead of mixing in warm-up probes. This also
@@ -3180,6 +2913,8 @@ void MainWindow::onWarmupEnd()
             m_net->resetStats();
             m_counting = true;
             m_elapsed.restart();
+            m_shownDurationMs = 0;
+            m_elapsedTimer->start();   // re-align ticks with the counting window
             m_testStartTime = QDateTime::currentDateTime();
             // Build the table before the page flips: every row appears in one
             // paint with hostnames/IPs/ASNs filled and all statistics columns
@@ -3200,18 +2935,6 @@ void MainWindow::onWarmupEnd()
 //  Results table & export
 // ==========================================================================
 
-// A probe's status for the tooltip and the export: the engine's own sentence
-// and the number, e.g. "Destination host unreachable, code 11003". The number
-// alone meant nothing to anyone without ipexport.h at hand; the text alone
-// would lose what a Windows report can be compared by.
-static QString describeStatus(unsigned long status, bool ipv6)
-{
-    QString text = QString::fromLatin1(OpenMTRStatusText(status, ipv6));
-    if (text.endsWith(QLatin1Char('.')))
-        text.chop(1);
-    return QStringLiteral("%1, code %2").arg(text).arg(status);
-}
-
 // Rebuild the table rows from the latest engine snapshot. Statistics come
 // straight from the engine — they are reset at reveal, so no baseline math
 // is needed here.
@@ -3219,20 +2942,14 @@ void MainWindow::updateTable()
 {
     if (!m_net) return;
     auto state = m_net->getCurrentState();
-    int rows = static_cast<int>(state.size());
+    auto rowData = computeReportRows(state, [this](const QString& ip, bool v6) { return getCachedASN(ip, v6); });
+    int rows = static_cast<int>(rowData.size());
     m_table->setRowCount(rows);
 
     for (int i = 0; i < rows; ++i) {
-        const auto& h = state[i];
-        QString ip      = QString::fromStdWString(addr_to_wstring(h.addr));
+        const auto& h   = state[i];
+        const auto& row = rowData[i];
         bool hasAddr    = (h.addr.Ipv4.sin_family != AF_UNSPEC);
-        QString name    = QString::fromStdWString(h.getName());
-        if (hasAddr && name.isEmpty()) name = ip;
-        // Hops without an address show the engine's status text ("Request
-        // timed out.", "Destination host unreachable.", ...) so active ICMP
-        // refusals are visible instead of hiding behind a dash. Before the
-        // first probe completes there is no status yet, hence the dash.
-        if (!hasAddr && name.isEmpty()) name = QStringLiteral("-");
 
         auto setCell = [&](int col, const QString& text, Qt::Alignment align) {
             auto* item = m_table->item(i, col);
@@ -3241,18 +2958,15 @@ void MainWindow::updateTable()
         };
         constexpr auto C = Qt::AlignCenter | Qt::AlignVCenter;
 
-        setCell(ColHop, QString::number(i + 1), C);
-        setCell(ColAsn, hasAddr ? getCachedASN(ip, h.addr.Ipv6.sin6_family == AF_INET6) : "-", C);
-        setCell(ColHostname, name, C);
-        setCell(ColIp, hasAddr ? ip : "-", C);
+        for (int c = 0; c < ColCount; ++c)
+            setCell(c, row.cells[c], C);
 
         // Rows showing an ICMP status instead of an address merge the
         // Hostname and IP cells so the text sits centred across both; the
         // delegate renders it in the muted shade via the UserRole flag. The
         // underlying IP cell keeps its "-" so text/CSV exports are unchanged.
-        const bool errRow = !hasAddr && name != QLatin1String("-");
         if (auto* hostItem = m_table->item(i, ColHostname))
-            hostItem->setData(Qt::UserRole, errRow);
+            hostItem->setData(Qt::UserRole, row.errorRow);
         // Multipath / route-change marker for the delegate + Fluent tooltip.
         const bool multipath = hasAddr && h.altCount > 0;
         const QString mpTip = multipath
@@ -3260,27 +2974,22 @@ void MainWindow::updateTable()
                   .arg(QString::fromStdWString(addr_to_wstring(h.altAddr)))
                   .arg(h.altCount)
             : QString();
-        for (int c : {(int)ColHostname, (int)ColIp}) {
+        for (int c : {static_cast<int>(ColHostname), static_cast<int>(ColIp)}) {
             if (auto* it = m_table->item(i, c)) {
                 it->setData(Qt::UserRole + 1, multipath);
                 it->setToolTip(mpTip);
             }
         }
 
-        const int wantSpan = errRow ? 2 : 1;
+        const int wantSpan = row.errorRow ? 2 : 1;
         if (m_table->columnSpan(i, ColHostname) != wantSpan)
             m_table->setSpan(i, ColHostname, 1, wantSpan);
 
-        if (h.xmit == 0) {
-            for (int c = ColLoss; c < ColCount; ++c) setCell(c, "-", C);
-        } else {
-            int loss = 100 - (100 * h.returned / h.xmit);
-
-            setCell(ColLoss, QString::number(loss), C);
-            // Diagnostic: hovering the Loss cell explains what every missing
-            // reply actually was — a genuine timeout, or an anomalous
-            // completion (a reply carrying a non-success ICMP status, or a
-            // soft failure of the send call), with the most recent code.
+        // Diagnostic: hovering the Loss cell explains what every missing
+        // reply actually was — a genuine timeout, or an anomalous
+        // completion (a reply carrying a non-success ICMP status, or a
+        // soft failure of the send call), with the most recent code.
+        if (h.xmit != 0) {
             if (auto* lossItem = m_table->item(i, ColLoss)) {
                 const int timeouts = h.xmit - h.returned - h.anomalyCount;
                 QString tip;
@@ -3293,13 +3002,6 @@ void MainWindow::updateTable()
                 }
                 lossItem->setData(Qt::ToolTipRole, tip.isEmpty() ? QVariant() : QVariant(tip));
             }
-            setCell(ColSent, QString::number(h.xmit), C);
-            setCell(ColRecv, QString::number(h.returned), C);
-            setCell(ColBest, h.returned == 0 ? "-" : QString::number(h.best),      C);
-            setCell(ColAvrg, h.returned == 0 ? "-" : QString::number(h.getAvg()),  C);
-            setCell(ColWrst, h.returned == 0 ? "-" : QString::number(h.worst),     C);
-            setCell(ColLast, h.returned == 0 ? "-" : QString::number(h.last),      C);
-            setCell(ColJttr, h.returned < 2 ? "-" : QString::number(h.getJitter()), C);
         }
     }
 
@@ -3320,127 +3022,42 @@ void MainWindow::updateTable()
     }
 }
 
-// The test's duration so far: live from m_elapsed while a test is actively
-// counting, or the value frozen at Stop otherwise. Copy/Export are only
+// The test's duration: while a test is actively counting, the value last shown
+// in the title bar (m_shownDurationMs, so reports match the window exactly),
+// or the value frozen at Stop otherwise. Copy/Export are only
 // enabled once counting has started at least once, so by the time either
 // export builder below runs, one of these two is always meaningful.
 qint64 MainWindow::currentTestDurationMs() const
 {
-    return (m_tracing && m_counting) ? m_elapsed.elapsed() : m_testDurationMs;
+    return (m_tracing && m_counting) ? m_shownDurationMs : m_testDurationMs;
 }
 
-// Machine-readable export: one object per hop, numbers as numbers, missing
-// values ("-") as null. Merged error rows carry the ICMP status text in
-// "hostname" and null in "ip", mirroring the on-screen table.
+// Both export builders gather the same (state, rows) pair the table itself
+// is drawn from and hand them to report_core.h's shared formatters — the
+// CLI's --report/--json builds its output the exact same way, from the same
+// functions, so GUI and CLI can never format a report differently.
+//
+// While tracing, rows are (re)computed live from the engine, same as
+// updateTable(). After Stop the engine is gone; m_finalRows holds the
+// snapshot taken at Stop, before m_asnCache is cleared (see onStartStop()) —
+// recomputing from a cleared cache would turn every ASN back into "-" and
+// silently re-trigger lookups for a trace that has already ended.
 QString MainWindow::buildJsonExport() const
 {
-    static const QStringList keys = {
-        "hop", "asn", "hostname", "ip", "loss", "sent", "recv",
-        "best", "avrg", "wrst", "last", "jttr"
-    };
-    // The live engine while a trace runs, its last snapshot after Stop.
-    const auto st = m_net ? m_net->getCurrentState() : m_finalState;
-    QJsonArray hops;
-    for (int i = 0; i < m_table->rowCount(); ++i) {
-        QJsonObject o;
-        for (int c = 0; c < COLUMNS.size(); ++c) {
-            auto* item = m_table->item(i, c);
-            const QString v = item ? item->text() : QString();
-            if (v.isEmpty() || v == QLatin1String("-")) {
-                o[keys[c]] = QJsonValue::Null;
-                continue;
-            }
-            bool numeric = false;
-            const int n = v.toInt(&numeric);
-            o[keys[c]] = numeric ? QJsonValue(n) : QJsonValue(v);
-        }
-        if (i < static_cast<int>(st.size()) && st[i].altCount > 0) {
-            o["alt_ip"]    = QString::fromStdWString(addr_to_wstring(st[i].altAddr));
-            o["alt_count"] = st[i].altCount;
-        }
-        hops.append(o);
-    }
-    QJsonObject root;
-    root["target"]          = m_reportTarget;
-    // Wall-clock time the counting window began (falls back to "now" if
-    // somehow queried before that, though Copy/Export stay disabled until
-    // then in practice) and how long it has run — see currentTestDurationMs().
-    root["test_started"]    = (m_testStartTime.isValid() ? m_testStartTime : QDateTime::currentDateTime()).toString(Qt::ISODate);
-    root["duration_seconds"] = static_cast<qint64>(currentTestDurationMs() / 1000);
-    root["generated"]       = QDateTime::currentDateTime().toString(Qt::ISODate);
-    root["hops"]            = hops;
-    return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    const auto state = m_net ? m_net->getCurrentState() : m_finalState;
+    const auto rows   = m_net
+        ? computeReportRows(state, [this](const QString& ip, bool v6) { return getCachedASN(ip, v6); })
+        : m_finalRows;
+    return buildJsonReport(m_reportTarget, m_testStartTime, currentTestDurationMs(), rows, state);
 }
 
-// Render the current table as a fixed-width ASCII box (for clipboard / .txt),
-// sizing each column to its actual content.
 QString MainWindow::buildTextExport() const
 {
-    const QString& target = m_reportTarget;
-    const int NCOLS = static_cast<int>(COLUMNS.size());
-    std::vector<int> W(NCOLS);
-    for (int c = 0; c < NCOLS; ++c) {
-        int w = static_cast<int>(COLUMNS[c].length());
-        for (int i = 0; i < m_table->rowCount(); ++i) {
-            auto* item = m_table->item(i, c);
-            const int len = static_cast<int>((item ? item->text() : QStringLiteral("-")).length());
-            if (len > w) w = len;
-        }
-        W[c] = w;
-    }
-    auto pad = [](const QString& s, int w) { return s.leftJustified(w, ' '); };
-    QString sep = "+";
-    for (int c = 0; c < NCOLS; ++c) sep += QString(W[c] + 2, '-') + "+";
-    QString out;
-    out += "OpenMTR Export\n";
-    out += QString("Target  : %1\n").arg(target);
-    out += QString("Date    : %1\n").arg((m_testStartTime.isValid() ? m_testStartTime : QDateTime::currentDateTime())
-                                              .toString("yyyy-MM-dd hh:mm:ss"));
-    out += QString("Duration: %1\n\n").arg(formatDuration(currentTestDurationMs()));
-    out += sep + "\n";
-    QString hdr = "|";
-    for (int c = 0; c < NCOLS; ++c) hdr += " " + pad(COLUMNS[c], W[c]) + " |";
-    out += hdr + "\n" + sep + "\n";
-    for (int i = 0; i < m_table->rowCount(); ++i) {
-        auto* hostItem = m_table->item(i, ColHostname);
-        const bool errRow = hostItem && hostItem->data(Qt::UserRole).toBool();
-        QString row = "|";
-        for (int c = 0; c < NCOLS; ++c) {
-            if (errRow && c == ColHostname) {
-                // Error rows merge Hostname+IP into one left-aligned field
-                // spanning the combined width of both columns.
-                const int wSpan = W[ColHostname] + W[ColIp] + 3;
-                row += " " + pad(hostItem->text(), wSpan) + " |";
-                ++c;   // the IP column is consumed by the span
-                continue;
-            }
-            auto* item = m_table->item(i, c);
-            row += " " + pad(item ? item->text() : "-", W[c]) + " |";
-        }
-        out += row + "\n";
-    }
-    out += sep + "\n";
-    // Anomalous probe completions (a reply carrying an uncounted ICMP status,
-    // or a soft failure of the send call) are invisible in the table but
-    // matter when diagnosing unexplained single-packet losses — list them.
-    // After Stop the engine is gone; its last snapshot still has them.
-    {
-        QString notes;
-        const auto st = m_net ? m_net->getCurrentState() : m_finalState;
-        for (int i = 0; i < static_cast<int>(st.size()); ++i)
-            if (st[i].altCount > 0)
-                notes += QString("  Hop %1: replies also arrived from %2 (%3 time(s)) \u2014 route change or per-packet load balancing\n")
-                             .arg(i + 1)
-                             .arg(QString::fromStdWString(addr_to_wstring(st[i].altAddr)))
-                             .arg(st[i].altCount);
-        for (int i = 0; i < static_cast<int>(st.size()); ++i)
-            if (st[i].anomalyCount > 0)
-                notes += QString("  Hop %1: %2 probe(s) ended with unexpected ICMP status/error: %3\n")
-                             .arg(i + 1).arg(st[i].anomalyCount).arg(describeStatus(st[i].anomalyLast, m_traceIsV6));
-        if (!notes.isEmpty())
-            out += "\nNotes:\n" + notes;
-    }
-    return out;
+    const auto state = m_net ? m_net->getCurrentState() : m_finalState;
+    const auto rows   = m_net
+        ? computeReportRows(state, [this](const QString& ip, bool v6) { return getCachedASN(ip, v6); })
+        : m_finalRows;
+    return buildTextReport(m_reportTarget, m_testStartTime, currentTestDurationMs(), rows, state, m_traceIsV6);
 }
 
 // Copy the full text report to the clipboard.
@@ -3466,8 +3083,9 @@ void MainWindow::onCopy()
 // persisted: the app keeps no settings at all, and adding a settings file for
 // this one string is not worth it.
 //
-// Guarded: the Windows branch of onExport() drives GetSaveFileNameW, which
-// has the shell's own most-recently-used behaviour and never calls these.
+// Guarded: the Windows branch of onExport() drives the shell's own Save
+// dialog, which has its own most-recently-used behaviour and never calls
+// these.
 // Unguarded they would be unreferenced statics there, and the MSVC build
 // turns C4505 into an error via /WX.
 static QString& lastExportDir()
@@ -3513,44 +3131,246 @@ static QString sanitizeForFilename(QString target)
     return target;
 }
 
-// Save the report via the native Save dialog, as .txt (ASCII box) or .csv.
+#ifndef Q_OS_WIN
+// The extension a Save dialog name filter stands for (".txt", ".csv",
+// ".json"), or an empty string for "All files". Guarded like
+// lastExportDir() above: the Windows branch gets the chosen filter as an
+// index from the dialog and never calls it, and an unreferenced static is a
+// C4505 error there under /WX.
+static QString extensionForFilterText(const QString& filter)
+{
+    if (filter.contains(QLatin1String(".csv")))  return QStringLiteral(".csv");
+    if (filter.contains(QLatin1String(".json"))) return QStringLiteral(".json");
+    if (filter.contains(QLatin1String(".txt")))  return QStringLiteral(".txt");
+    return QString();
+}
+#endif  // !Q_OS_WIN
+
+// The Save dialog opens showing "<name>.txt" (the first filter). A person who
+// only switches the filter to CSV or JSON and leaves that name alone means
+// the other format, but a dialog is free to leave ".txt" in place, which
+// would save the text report under the wrong kind of name. So when the chosen
+// path is exactly the untouched default name and the filter stands for a
+// different extension, follow the filter. Any name the person edited is left
+// exactly as typed.
+static QString followFilterForUntouchedName(QString path, const QString& untouchedName,
+                                            const QString& filterExt)
+{
+    static const QString defaultExt = QStringLiteral(".txt");
+    if (!filterExt.isEmpty() && filterExt != defaultExt
+        && QFileInfo(path).fileName().compare(untouchedName, Qt::CaseInsensitive) == 0
+        && path.endsWith(defaultExt, Qt::CaseInsensitive)) {
+        path.chop(defaultExt.size());
+        path += filterExt;
+    }
+    return path;
+}
+
+#ifdef Q_OS_WIN
+// ---- Windows: the Save dialog --------------------------------------------
+// The Common Item Dialog (IFileSaveDialog) instead of GetSaveFileNameW. They
+// look the same, but only the former reports a change of the "Save as type"
+// list while the dialog is open, which is what lets the extension in the
+// file-name box follow the chosen type. GetSaveFileNameW leaves the name as
+// it is, and a hook to learn about the change (CDN_TYPECHANGE) would bring
+// back the pre-Vista dialog. Qt's own native dialog works the same way.
+
+// The extension a 1-based "Save as type" index stands for; nullptr for
+// "All files", which has none.
+static const wchar_t* exportExtensionForTypeIndex(UINT index)
+{
+    switch (index) {
+    case 1:  return L".txt";
+    case 2:  return L".csv";
+    case 3:  return L".json";
+    default: return nullptr;
+    }
+}
+
+// Swaps a trailing .txt/.csv/.json of `name` for `newExt`. Any other name is
+// returned as it is: one the person gave a different extension, and every
+// name under "All files" (newExt == nullptr), where nothing should change.
+static std::wstring withExportExtension(std::wstring name, const wchar_t* newExt)
+{
+    if (!newExt)
+        return name;
+    for (const wchar_t* known : { L".txt", L".csv", L".json" }) {
+        const size_t len = wcslen(known);
+        if (name.size() >= len && _wcsicmp(name.c_str() + name.size() - len, known) == 0) {
+            name.resize(name.size() - len);
+            name += newExt;
+            break;
+        }
+    }
+    return name;
+}
+
+// Listens to the dialog and rewrites the extension in its file-name box when
+// the person picks another type. If the dialog has already done so itself the
+// name already ends in the new extension and nothing is changed.
+class ExportDialogEvents final : public IFileDialogEvents
+{
+public:
+    // IUnknown
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override
+    {
+        if (!ppv)
+            return E_POINTER;
+        if (riid == IID_IUnknown || riid == __uuidof(IFileDialogEvents)) {
+            *ppv = static_cast<IFileDialogEvents*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override
+    {
+        return static_cast<ULONG>(InterlockedIncrement(&m_refs));
+    }
+    ULONG STDMETHODCALLTYPE Release() override
+    {
+        const LONG refs = InterlockedDecrement(&m_refs);
+        if (refs == 0)
+            delete this;
+        return static_cast<ULONG>(refs);
+    }
+
+    // IFileDialogEvents
+    HRESULT STDMETHODCALLTYPE OnTypeChange(IFileDialog* dialog) override
+    {
+        UINT typeIndex = 0;
+        PWSTR typed = nullptr;
+        if (SUCCEEDED(dialog->GetFileTypeIndex(&typeIndex))
+            && SUCCEEDED(dialog->GetFileName(&typed)) && typed) {
+            const std::wstring current = typed;
+            const std::wstring swapped =
+                withExportExtension(current, exportExtensionForTypeIndex(typeIndex));
+            if (swapped != current)
+                dialog->SetFileName(swapped.c_str());
+        }
+        if (typed)
+            CoTaskMemFree(typed);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE OnFileOk(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnFolderChanging(IFileDialog*, IShellItem*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnFolderChange(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnSelectionChange(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnShareViolation(IFileDialog*, IShellItem*,
+                                               FDE_SHAREVIOLATION_RESPONSE*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnOverwrite(IFileDialog*, IShellItem*,
+                                          FDE_OVERWRITE_RESPONSE*) override { return S_OK; }
+
+private:
+    ~ExportDialogEvents() = default;   // only ever destroyed through Release()
+    LONG m_refs = 1;
+};
+
+struct ComRelease
+{
+    void operator()(IUnknown* p) const { if (p) p->Release(); }
+};
+
+// Shows the dialog. Returns true with the full path in `pathOut` and the
+// 1-based "Save as type" entry that was selected in `typeIndexOut`; false if
+// the person cancelled or the dialog could not be created or shown.
+static bool showWindowsSaveDialog(HWND owner, const std::wstring& defaultName,
+                                  std::wstring& pathOut, UINT& typeIndexOut)
+{
+    // Qt has already initialised COM on this thread; this only makes the
+    // function correct on its own, and is paired with CoUninitialize either way.
+    struct ComScope
+    {
+        bool initialised;
+        ~ComScope() { if (initialised) CoUninitialize(); }
+    } comScope{ SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)) };
+
+    IFileSaveDialog* rawDialog = nullptr;
+    if (FAILED(CoCreateInstance(__uuidof(FileSaveDialog), nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&rawDialog))) || !rawDialog)
+        return false;
+    std::unique_ptr<IFileSaveDialog, ComRelease> dialog(rawDialog);
+
+    static const COMDLG_FILTERSPEC types[] = {
+        { L"Text files (*.txt)",  L"*.txt"  },
+        { L"CSV files (*.csv)",   L"*.csv"  },
+        { L"JSON files (*.json)", L"*.json" },
+        { L"All files (*.*)",     L"*.*"    },
+    };
+    DWORD options = 0;
+    if (FAILED(dialog->GetOptions(&options))
+        || FAILED(dialog->SetOptions(options | FOS_OVERWRITEPROMPT | FOS_PATHMUSTEXIST
+                                     | FOS_NOCHANGEDIR | FOS_FORCEFILESYSTEM))
+        || FAILED(dialog->SetFileTypes(static_cast<UINT>(ARRAYSIZE(types)), types))
+        || FAILED(dialog->SetFileTypeIndex(1)))
+        return false;
+    dialog->SetTitle(L"Export results");
+    dialog->SetFileName(defaultName.c_str());
+
+    // Without the listener the dialog still works; the extension then
+    // follows the type only through the check made on the chosen path.
+    DWORD cookie = 0;
+    bool advised = false;
+    if (ExportDialogEvents* events = new ExportDialogEvents) {
+        advised = SUCCEEDED(dialog->Advise(events, &cookie));
+        events->Release();
+    }
+    const HRESULT shown = dialog->Show(owner);
+    if (advised)
+        dialog->Unadvise(cookie);
+    if (shown == HRESULT_FROM_WIN32(ERROR_CANCELLED))
+        return false;
+    if (FAILED(shown))
+        return false;
+
+    IShellItem* rawItem = nullptr;
+    if (FAILED(dialog->GetResult(&rawItem)) || !rawItem)
+        return false;
+    std::unique_ptr<IShellItem, ComRelease> item(rawItem);
+    PWSTR path = nullptr;
+    if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) || !path)
+        return false;
+    pathOut = path;
+    CoTaskMemFree(path);
+    if (FAILED(dialog->GetFileTypeIndex(&typeIndexOut)))
+        typeIndexOut = 1;
+    return true;
+}
+#endif  // Q_OS_WIN
+
+// Save the report via the native Save dialog, as .txt (ASCII box), .csv or .json.
 void MainWindow::onExport()
 {
     if (!m_exportBtn->isEnabled()) return;
     QString stamp  = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
     const QString safeTarget = sanitizeForFilename(m_reportTarget);
-    QString defaultName = QString("OpenMTR_%1_%2").arg(safeTarget.isEmpty() ? "export" : safeTarget, stamp);
+    // With the extension of the first (default) filter, so the name field shows
+    // the full file name, as Save dialogs conventionally do.
+    const QString defaultName = QString("OpenMTR_%1_%2.txt").arg(safeTarget.isEmpty() ? "export" : safeTarget, stamp);
 
 #ifdef Q_OS_WIN
-    wchar_t fileBuf[MAX_PATH] = {};
-    wcsncpy_s(fileBuf, defaultName.toStdWString().c_str(), _TRUNCATE);
+    const HWND owner = reinterpret_cast<HWND>(winId());
+    std::wstring chosen;
+    UINT typeIndex = 1;
+    if (!showWindowsSaveDialog(owner, defaultName.toStdWString(), chosen, typeIndex))
+        return;
 
-    OPENFILENAMEW ofn = {};
-    ofn.lStructSize  = sizeof(ofn);
-    ofn.hwndOwner    = reinterpret_cast<HWND>(winId());
-    ofn.lpstrFilter  = L"Text files (*.txt)\0*.txt\0CSV files (*.csv)\0*.csv\0"
-                       L"JSON files (*.json)\0*.json\0All files (*.*)\0*.*\0";
-    ofn.nFilterIndex = 1;
-    ofn.lpstrFile    = fileBuf;
-    ofn.nMaxFile     = static_cast<DWORD>(ARRAYSIZE(fileBuf));
-    ofn.lpstrTitle   = L"Export results";
-    ofn.Flags        = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST;
-
-    if (!GetSaveFileNameW(&ofn)) return;
-
-    QString path = QString::fromWCharArray(fileBuf);
+    // The dialog keeps the extension in the name box in step with the chosen
+    // type; this covers a name it left untouched all the same.
+    const wchar_t* typeExt = exportExtensionForTypeIndex(typeIndex);
+    QString path = followFilterForUntouchedName(
+        QString::fromStdWString(chosen), defaultName,
+        typeExt ? QString::fromWCharArray(typeExt) : QString());
     if (!path.endsWith(QLatin1String(".txt"), Qt::CaseInsensitive) &&
         !path.endsWith(QLatin1String(".csv"), Qt::CaseInsensitive) &&
         !path.endsWith(QLatin1String(".json"), Qt::CaseInsensitive))
         // Nothing is appended under "All files" (index 4): the point of
         // picking it is to name the file yourself, and forcing .txt onto
         // "trace.log" would give "trace.log.txt".
-        path += (ofn.nFilterIndex == 2) ? QStringLiteral(".csv")
-              : (ofn.nFilterIndex == 3) ? QStringLiteral(".json")
-              : (ofn.nFilterIndex == 1) ? QStringLiteral(".txt")
-                                        : QString();
+        path += typeExt ? QString::fromWCharArray(typeExt) : QString();
 #elif defined(Q_OS_MAC)
-    // Native NSSavePanel, the macOS counterpart of the GetSaveFileNameW
+    // Native NSSavePanel, the macOS counterpart of the Windows Save dialog
     // branch above: Qt's Cocoa plugin gives it to us for free as long as
     // DontUseNativeDialog is *not* set. The Linux branch below has to fall
     // back to Qt's own widget dialog and hand-style it; on macOS that path
@@ -3573,6 +3393,7 @@ void MainWindow::onExport()
         this, tr("Export results"), QDir(exportDirectory()).filePath(defaultName),
         macFilters.join(QStringLiteral(";;")), &selectedFilter);
     if (path.isEmpty()) return;
+    path = followFilterForUntouchedName(path, defaultName, extensionForFilterText(selectedFilter));
 
     if (!path.endsWith(QLatin1String(".txt"), Qt::CaseInsensitive) &&
         !path.endsWith(QLatin1String(".csv"), Qt::CaseInsensitive) &&
@@ -3584,7 +3405,7 @@ void MainWindow::onExport()
         else if (selectedFilter.contains(".txt"))  path += QStringLiteral(".txt");
     }
 #else
-    // No native save-panel API used here (unlike Windows' GetSaveFileNameW
+    // No native save-panel API used here (unlike Windows' IFileSaveDialog
     // and macOS's NSSavePanel above); Qt's own file dialog covers the same
     // job on Linux.
     QFileDialog dialog(this, tr("Export results"));
@@ -3604,7 +3425,7 @@ void MainWindow::onExport()
     // rather than off m_darkMode/the in-app light/dark toggle. Its titlebar
     // is real window-manager chrome, which already themes itself off the
     // system regardless of what the app's toggle says; deciding the content
-    // from m_darkMode instead would let the two disagree. GetSaveFileNameW
+    // from m_darkMode instead would let the two disagree. The Save dialog
     // on Windows never has this problem — its whole native dialog, chrome
     // and content together, already always follows the system theme.
     const bool dialogDark = isWindowsDarkMode();
@@ -3623,11 +3444,17 @@ void MainWindow::onExport()
         : "QWidget { background-color: #f3f3f3; color: rgba(0,0,0,0.89); }");
     dialog.setAcceptMode(QFileDialog::AcceptSave);
     dialog.setFileMode(QFileDialog::AnyFile);
+    // When the filter is switched, this dialog swaps the extension in the
+    // name field itself (which now shows one, see defaultName). "All files"
+    // is spelled (*) rather than (*.*) on purpose: Qt would otherwise swap in
+    // the pattern's own "*" and leave "<name>.*" in the field, whereas with
+    // (*) there is no extension to swap in and the name stays as it is,
+    // matching the other platforms. It also lists files without a dot.
     dialog.setNameFilters({
         tr("Text files (*.txt)"),
         tr("CSV files (*.csv)"),
         tr("JSON files (*.json)"),
-        tr("All files (*.*)")
+        tr("All files (*)")
     });
     // Same reasoning as the macOS branch: point the dialog at a real
     // directory instead of letting a bare name resolve against the process
@@ -3638,6 +3465,7 @@ void MainWindow::onExport()
 
     QString path = dialog.selectedFiles().first();
     QString selectedFilter = dialog.selectedNameFilter();
+    path = followFilterForUntouchedName(path, defaultName, extensionForFilterText(selectedFilter));
     if (!path.endsWith(QLatin1String(".txt"), Qt::CaseInsensitive) &&
         !path.endsWith(QLatin1String(".csv"), Qt::CaseInsensitive) &&
         !path.endsWith(QLatin1String(".json"), Qt::CaseInsensitive)) {
@@ -3661,33 +3489,11 @@ void MainWindow::onExport()
     if (path.endsWith(".json", Qt::CaseInsensitive)) {
         ts << buildJsonExport();
     } else if (path.endsWith(".csv", Qt::CaseInsensitive)) {
-        ts << COLUMNS.join(',') << "\n";
-        for (int i = 0; i < m_table->rowCount(); ++i) {
-            QStringList cells;
-            for (int c = 0; c < COLUMNS.size(); ++c) {
-                auto* item = m_table->item(i, c);
-                QString val = item ? item->text() : "";
-                // Neutralise spreadsheet formula injection, but only in the
-                // hostname column — the one place a remote party controls
-                // the text: a hop along the path can name itself "=cmd|..."
-                // via reverse DNS and Excel/LibreOffice would run the cell
-                // as a formula when this CSV is opened. Risky leading
-                // characters get the OWASP-recommended quote prefix. The
-                // other columns are app-generated numbers, addresses and
-                // fixed strings, where prefixing could only distort data.
-                if (c == ColHostname && !val.isEmpty() && val != QLatin1String("-")) {
-                    const QChar c0 = val.at(0);
-                    if (c0 == QLatin1Char('=') || c0 == QLatin1Char('+') ||
-                        c0 == QLatin1Char('-') || c0 == QLatin1Char('@') ||
-                        c0 == QLatin1Char('\t'))
-                        val.prepend(QLatin1Char('\''));
-                }
-                if (val.contains(',') || val.contains('"'))
-                    val = "\"" + val.replace("\"", "\"\"") + "\"";
-                cells << val;
-            }
-            ts << cells.join(',') << "\n";
-        }
+        const auto state = m_net ? m_net->getCurrentState() : m_finalState;
+        const auto rows   = m_net
+            ? computeReportRows(state, [this](const QString& ip, bool v6) { return getCachedASN(ip, v6); })
+            : m_finalRows;
+        ts << buildCsvReport(rows);
     } else {
         ts << buildTextExport();
     }

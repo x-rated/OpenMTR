@@ -4,22 +4,24 @@
 #  AppImage - see .github/workflows/build.yml for how each Qt is built)
 # ============================================================================
 
-cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.25)
 
 # Must be set before project(): the minimum macOS version the app targets,
 # and the only architecture it's built for (Apple Silicon only — no Intel).
-# 13.0 is what the official Qt 6.11 binaries are built for — every bundled
-# framework and plugin declares minos 13. Declaring more than Qt needs just
-# excludes working systems (Ventura); declaring less lets macOS launch a
-# bundle whose Qt then refuses to load, killing the app at startup instead
-# of showing a clean "requires macOS 13" dialog. The CI job re-checks this
-# against every binary it ships (see .github/workflows/build.yml).
+# 14.4 is the minimum Qt 6.12 supports (QT_SUPPORTED_MIN_MACOS_VERSION in
+# qtbase's .cmake.conf, also Qt's own default deployment target) — Qt 6.11
+# and earlier went down to 13. Declaring more than Qt needs just excludes
+# working systems; declaring less lets macOS launch a bundle whose Qt then
+# refuses to load (or hits APIs Qt assumes exist), killing the app at startup
+# instead of showing a clean "requires macOS 14.4" dialog. The CI job
+# re-checks this against every binary it ships (see
+# .github/workflows/build.yml).
 if(APPLE)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum OS X version" FORCE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.4" CACHE STRING "Minimum OS X version" FORCE)
     set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "Build architectures" FORCE)
 endif()
 
-project(OpenMTR VERSION 1.3.0 LANGUAGES CXX)
+project(OpenMTR VERSION 1.4.0 LANGUAGES CXX)
 
 # ---- Language & Qt code generation -----------------------------------------
 set(CMAKE_CXX_STANDARD 20)
@@ -29,9 +31,13 @@ set(CMAKE_AUTORCC ON)
 
 # ---- Generated version header ----------------------------------------------
 # Written to the build dir so the sources can #include "version.h".
+# OPENMTR_VERSION carries a " DEV" suffix while this is a development build;
+# drop it for a release. PROJECT_VERSION itself stays pure X.Y.Z — it also
+# feeds the macOS bundle version and the Windows .rc VERSIONINFO below, both
+# of which require a strictly numeric value.
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/version.h"
     "#pragma once\n"
-    "#define OPENMTR_VERSION       \"${PROJECT_VERSION}\"\n"
+    "#define OPENMTR_VERSION       \"${PROJECT_VERSION} DEV\"\n"
     "#define OPENMTR_VERSION_TITLE \"OpenMTR\"\n"
 )
 
@@ -40,7 +46,7 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/version.h"
 # .rc format isn't meaningful to other platforms' compilers.
 if(WIN32)
     configure_file(
-        "${CMAKE_CURRENT_SOURCE_DIR}/app.rc.in"
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/app.rc.in"
         "${CMAKE_CURRENT_BINARY_DIR}/app.rc"
         @ONLY
     )
@@ -52,7 +58,10 @@ include_directories("${CMAKE_CURRENT_BINARY_DIR}")
 # checkForUpdates()) shells out to the OS's own curl instead of linking
 # a network/TLS stack into this binary - see the comment above that
 # function for the fuller trade-off.
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+# 6.12 is the oldest Qt supported: the code uses QStyleHints::toolTipWakeUpDelay
+# (new in 6.12) and carries no fallbacks for older versions, so a too-old Qt
+# stops here at configure time instead of failing inside the compiler.
+find_package(Qt6 6.12 REQUIRED COMPONENTS Widgets)
 
 # DBus is Linux-only: used to watch org.freedesktop.portal.Settings for live
 # light/dark and accent-colour changes, and for a one-shot accent-colour
@@ -78,19 +87,38 @@ endif()
 
 # ---- Executable ------------------------------------------------------------
 qt_add_executable(OpenMTR
-    main.cpp
-    MainWindow.cpp
-    MainWindow.h
-    tracer.cpp
-    tracer.h
-    resources.qrc
+    src/main.cpp
+    src/MainWindow.cpp
+    src/MainWindow.h
+    src/tracer.cpp
+    src/tracer.h
+    src/report_core.cpp
+    src/report_core.h
+    src/asncache.cpp
+    src/asncache.h
+    src/updatecheck.cpp
+    src/updatecheck.h
+    src/versioninfo.cpp
+    src/versioninfo.h
+    src/cli.cpp
+    src/cli.h
+    resources/resources.qrc
 )
+
+# Update-check kill switch. At 0, checkForUpdateBlocking() (both its call
+# sites, in MainWindow.cpp and cli.cpp, and its body in updatecheck.cpp)
+# compiles out entirely — the curl/QProcess/GitHub-API code and its string
+# literals are absent from the binary, not just unreachable. Kept at 0
+# because the network+TLS profile is suspected of contributing to AV/VT ML
+# false positives (Wacatac) on the Windows build. Flip to 1 to restore in
+# both places at once; no other change is needed. See updatecheck.h.
+target_compile_definitions(OpenMTR PRIVATE OPENMTR_ENABLE_UPDATE_CHECK=0)
 
 # app_icon.png is already zlib-compressed as PNG; rcc's own default
 # compression pass on top of that just spends cycles re-compressing
 # near-incompressible data for no size benefit, while adding another small
 # high-entropy blob to the binary for no reason.
-set_source_files_properties(resources.qrc PROPERTIES
+set_source_files_properties(resources/resources.qrc PROPERTIES
     AUTORCC_OPTIONS "--no-compress"
 )
 
@@ -133,7 +161,7 @@ if(WIN32)
         Iphlpapi     # IcmpSendEcho2 / Icmp6SendEcho2
         dwmapi       # Mica backdrop, dark titlebar, rounded corners
         dnsapi       # DnsQuery_W (ASN TXT lookups)
-        comdlg32     # GetSaveFileNameW (export dialog)
+        ole32        # IFileSaveDialog / CoCreateInstance (export dialog)
         delayimp     # Required by /DELAYLOAD below
     )
     # Delay-load the networking DLLs: they're pulled in only when the code
@@ -152,12 +180,23 @@ if(WIN32)
 endif()
 
 # ---- Target properties & compiler options ----------------------------------
-# WIN32_EXECUTABLE: build a GUI app (no console window).
 # MACOSX_BUNDLE: build a macOS app bundle (.app) instead of a bare binary.
 set_target_properties(OpenMTR PROPERTIES
-    WIN32_EXECUTABLE TRUE
     MACOSX_BUNDLE TRUE
 )
+
+# Windows: deliberately NOT WIN32_EXECUTABLE. The exe is linked for the
+# console subsystem (/SUBSYSTEM:CONSOLE, main() as the entry point), which is
+# what makes cmd.exe/PowerShell wait for `OpenMTR --report ...` to finish,
+# give it working stdout/stderr and redirection, and return its exit code -
+# so the CLI mode needs no console/prompt handling of its own. The GUI must
+# still not open a console window when started from Explorer; that is the
+# job of consoleAllocationPolicy=detached in resources/app.manifest (embedded
+# below, MSVC builds). Setting this to TRUE would silently bring back a
+# process that shells do not wait for.
+if(WIN32)
+    set_target_properties(OpenMTR PROPERTIES WIN32_EXECUTABLE FALSE)
+endif()
 
 # Whole-program / link-time code generation (MSVC: /GL + /LTCG, GCC/Clang:
 # equivalent LTO). Standard for professionally built release binaries;
@@ -193,7 +232,7 @@ set_target_properties(OpenMTR PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
 # 0.48.1) regenerates the PNG byte for byte. The build itself only needs the
 # PNG, so no new tool is required in CI.
 if(APPLE)
-    set(APP_ICON_SRC "${CMAKE_CURRENT_SOURCE_DIR}/app_icon_macos.png")
+    set(APP_ICON_SRC "${CMAKE_CURRENT_SOURCE_DIR}/resources/app_icon_macos.png")
     set(APP_ICONSET  "${CMAKE_CURRENT_BINARY_DIR}/app_icon.iconset")
     set(APP_ICNS     "${CMAKE_CURRENT_BINARY_DIR}/app_icon.icns")
 
@@ -225,7 +264,7 @@ if(APPLE)
     set_source_files_properties("${APP_ICNS}" PROPERTIES
         MACOSX_PACKAGE_LOCATION "Resources")
     set_target_properties(OpenMTR PROPERTIES
-        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.in"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/resources/Info.plist.in"
         MACOSX_BUNDLE_GUI_IDENTIFIER       "eu.slamb.OpenMTR"
         MACOSX_BUNDLE_BUNDLE_NAME          "OpenMTR"
         MACOSX_BUNDLE_BUNDLE_VERSION       "${PROJECT_VERSION}"
@@ -256,9 +295,9 @@ endif()
 if(UNIX AND NOT APPLE)
     include(GNUInstallDirs)
     install(TARGETS OpenMTR RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
-    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/openmtr.desktop"
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/openmtr.desktop"
         DESTINATION "${CMAKE_INSTALL_DATADIR}/applications")
-    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/app_icon.png"
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/app_icon.png"
         DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps"
         RENAME "openmtr.png")
 
@@ -308,7 +347,10 @@ if(NOT MSVC)
 endif()
 
 if(MSVC)
-    target_sources(OpenMTR PRIVATE app.manifest)
+    # Also carries consoleAllocationPolicy=detached - required for the console
+    # subsystem exe not to open a console window when launched from Explorer
+    # (Windows 11 24H2 / build 26100 or later; older Windows ignores it).
+    target_sources(OpenMTR PRIVATE resources/app.manifest)
     # /W4 /WX: high warning level, warnings as errors.
     # /wd4100: unreferenced formal parameter. /wd4127: conditional is constant.
     target_compile_options(OpenMTR PRIVATE /W4 /WX

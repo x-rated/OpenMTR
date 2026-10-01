@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<!-- Windows application manifest: declares Per-Monitor-V2 DPI awareness and
-     long-path support, and depends on the v6 common controls. -->
+<!-- Windows application manifest: declares Per-Monitor-V2 DPI awareness,
+     long-path support and console allocation policy, and depends on the v6
+     common controls. -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0" xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
-  <assemblyIdentity version="1.3.0.0" processorArchitecture="*" name="OpenMTR" type="win32"/>
+  <assemblyIdentity version="1.4.0.0" processorArchitecture="*" name="OpenMTR" type="win32"/>
   <description>OpenMTR Network Diagnostic Tool</description>
   <!-- No privilege escalation: runs with the invoking user's token. -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
@@ -12,12 +13,20 @@
       </requestedPrivileges>
     </security>
   </trustInfo>
-  <!-- High-DPI / long-path behaviour. -->
+  <!-- High-DPI / long-path / console behaviour.
+       OpenMTR is linked as a console-subsystem exe (so shells wait for it in
+       command-line mode). "detached" tells Windows not to create
+       a console for it when it is started from Explorer, so the GUI still
+       opens without a console window; started from a shell it simply uses
+       that shell's console. Needs Windows 11 24H2 (build 26100) or later;
+       older versions ignore the element and show a console window behind the
+       GUI when it is started from Explorer. -->
   <asmv3:application>
     <asmv3:windowsSettings>
       <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">True/PM</dpiAware>
       <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
       <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+      <consoleAllocationPolicy xmlns="http://schemas.microsoft.com/SMI/2024/WindowsSettings">detached</consoleAllocationPolicy>
     </asmv3:windowsSettings>
   </asmv3:application>
   <!-- Use the themed v6 common controls. -->

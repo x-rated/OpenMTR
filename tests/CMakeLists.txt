@@ -8,10 +8,10 @@
 # in a container), but never on Windows.
 find_package(Threads REQUIRED)
 
-add_executable(engine_tests engine_tests.cpp ${PROJECT_SOURCE_DIR}/tracer.cpp)
+add_executable(engine_tests engine_tests.cpp ${PROJECT_SOURCE_DIR}/src/tracer.cpp)
 # The project turns AUTOMOC on globally; nothing here is a Qt class.
 set_target_properties(engine_tests PROPERTIES AUTOMOC OFF)
-target_include_directories(engine_tests PRIVATE ${PROJECT_SOURCE_DIR})
+target_include_directories(engine_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(engine_tests PRIVATE Threads::Threads)
 if(NOT MSVC)
     target_compile_options(engine_tests PRIVATE -Wall -Wextra)

@@ -1,0 +1,7 @@
+# GitHub's Linguist (the language-stats bar on the repo page) guesses a .h
+# file's language from its content, since the extension alone is ambiguous
+# between C, C++ and Objective-C. A header with few C++-only tokens (no
+# class/namespace/template/::) can get misclassified as plain C — this
+# project's headers are all C++, so tell Linguist that outright rather than
+# leaving it to guess per file.
+*.h linguist-language=C++

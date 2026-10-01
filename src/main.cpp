@@ -12,6 +12,7 @@
 
 // Project headers.
 #include "MainWindow.h"
+#include "cli.h"
 #include "version.h"
 
 #ifdef _WIN32
@@ -33,6 +34,9 @@
 #include <QtCore/QString>
 #include <QtCore/QByteArray>
 #endif
+
+#include <cstdio>
+#include <cstring>
 
 // Static Qt plugins linked into the executable — Windows only, since that's
 // the only platform built as a fully static Qt binary. macOS links Qt
@@ -131,10 +135,41 @@ static void integrateAppImageDesktopEntry()
 // down only after the loop returns so background sockets stay valid.
 int main(int argc, char* argv[])
 {
+    // `--version`/`-v` short-circuits everything else — GUI, --report, even
+    // Winsock startup — since it needs none of that to answer. Checked
+    // first so `OpenMTR --report --version ...` and a bare `OpenMTR
+    // --version` behave identically: print the version and exit.
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--version") == 0 || std::strcmp(argv[i], "-v") == 0
+            || std::strcmp(argv[i], "--v") == 0) {
+            return cli::printVersion();
+        }
+    }
+
 #ifdef _WIN32
     WSADATA wsaData;
     WSAStartup(MAKEWORD(2, 2), &wsaData);
 #endif
+
+    // Headless report mode: `OpenMTR --report --time <sec> ... <target>`
+    // skips the GUI entirely — no QApplication, no window, no event loop —
+    // so it also works over SSH, from cron, or in CI with no display at
+    // all. Checked before anything Qt-Widgets-related is touched.
+    for (int i = 1; i < argc; ++i) {
+        // -h/--help belongs to the CLI too: a bare `OpenMTR --help` must
+        // print usage, not open the window. cli::run() answers it before
+        // requiring --report or any other option.
+        if (std::strcmp(argv[i], "--report") == 0
+            || std::strcmp(argv[i], "--help") == 0
+            || std::strcmp(argv[i], "-h") == 0
+            || std::strcmp(argv[i], "--h") == 0) {
+            const int ret = cli::run(argc, argv);
+#ifdef _WIN32
+            WSACleanup();
+#endif
+            return ret;
+        }
+    }
 
 #ifdef Q_OS_LINUX
     // Many Linux desktops set QT_QPA_PLATFORMTHEME=gtk3, which pulls the

@@ -69,7 +69,7 @@ typedef int BOOL;
 #define TRUE  1
 typedef unsigned long long ULONGLONG;
 typedef void* HANDLE;
-#define INVALID_HANDLE_VALUE ((HANDLE)(long)-1)
+#define INVALID_HANDLE_VALUE (reinterpret_cast<HANDLE>(static_cast<long>(-1)))
 
 typedef struct
 {
@@ -192,6 +192,12 @@ const char* OpenMTRStatusText(unsigned long status, bool ipv6);
 // ==========================================================================
 //  Constants
 // ==========================================================================
+
+// Set once, before DoTrace() is ever called, by the CLI's --report mode (see
+// cli.cpp). Lets DoTrace() know a message box has nowhere to be shown and no
+// one to click it — see the ICMP-handle failure check inside DoTrace() below.
+// False (its default) is exactly today's GUI behaviour, unchanged.
+inline std::atomic<bool> g_openMtrHeadless{false};
 
 // Highest TTL we probe (i.e. maximum number of hops shown).
 #define MAX_HOPS        30
@@ -502,8 +508,18 @@ public:
         // engine itself carries no UI dependency.
         if (!m_net->initialized) {
 #ifdef _WIN32
-            MessageBoxW(nullptr, L"Error opening ICMP handle!", L"OpenMTR",
-                        MB_OK | MB_ICONERROR);
+            // A MessageBoxW here is fine for the GUI (someone is at the
+            // keyboard to dismiss it), but the CLI's --report mode can run
+            // completely unattended (Task Scheduler with no interactive
+            // session) — there popping a dialog nobody can click would hang
+            // the run forever instead of just failing. g_openMtrHeadless is
+            // set once, at the very start of cli::run(), before this can be
+            // reached.
+            if (g_openMtrHeadless.load())
+                fprintf(stderr, "Error opening ICMP handle!\n");
+            else
+                MessageBoxW(nullptr, L"Error opening ICMP handle!", L"OpenMTR",
+                            MB_OK | MB_ICONERROR);
 #else
             fprintf(stderr, "Error opening ICMP handle!\n");
 #endif
@@ -513,14 +529,14 @@ public:
 
         sockaddr_storage ss = {};
         if (dest.Ipv4.sin_family == AF_INET) {
-            auto* s4 = (sockaddr_in*)&ss;
+            auto* s4 = reinterpret_cast<sockaddr_in*>(&ss);
 #ifdef __APPLE__
             s4->sin_len = sizeof(sockaddr_in);
 #endif
             s4->sin_family = AF_INET;
             s4->sin_addr   = dest.Ipv4.sin_addr;
         } else {
-            auto* s6 = (sockaddr_in6*)&ss;
+            auto* s6 = reinterpret_cast<sockaddr_in6*>(&ss);
 #ifdef __APPLE__
             s6->sin6_len = sizeof(sockaddr_in6);
 #endif
@@ -538,7 +554,7 @@ public:
             std::stop_callback stopper(stopToken, [this] {
                 if (m_net) m_net->StopTrace();
             });
-            m_net->DoTrace((sockaddr*)&ss);
+            m_net->DoTrace(reinterpret_cast<sockaddr*>(&ss));
             m_done.store(true);
         });
 

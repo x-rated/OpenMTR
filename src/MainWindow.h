@@ -81,9 +81,6 @@
 #include <QtCore/QStringList>
 #include <QtCore/QPointer>
 #include <QtCore/QUrl>
-#include <QtCore/QJsonDocument>
-#include <QtCore/QJsonObject>
-#include <QtCore/QProcess>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QFileInfo>
 
@@ -135,6 +132,8 @@
 
 // Project — the network engine.
 #include "tracer.h"
+#include "report_core.h"
+#include "asncache.h"
 
 // C++ standard library.
 #include <memory>
@@ -143,8 +142,6 @@
 #include <array>
 #include <algorithm>
 #include <stop_token>
-#include <unordered_map>
-#include <unordered_set>
 #include <string>
 
 // ==========================================================================
@@ -521,6 +518,43 @@ public:
         if (hint == SH_FocusFrame_Mask && widget && widget->property("ovFocusRing").toBool())
             return 0;
         return QProxyStyle::styleHint(hint, option, widget, returnData);
+    }
+};
+
+// QSpinBox that lays out its text field itself. Qt 6.12's style sheet style
+// (QStyleSheetStyle::subControlRect, SC_SpinBoxEditField) collapses the edit
+// field of a box-model-styled spin box with NoButtons to about 0 px wide — the
+// hidden up/down buttons count as zero-sized rects at x = 0, which cuts off
+// everything to the right of x = 0 — and drops the left border and padding,
+// so the value is invisible and typing shows nothing. Until that is fixed
+// upstream, the intended geometry is re-applied whenever Qt recomputes it:
+// after every resize and every style change (a setStyleSheet() call arrives
+// as QEvent::StyleChange). The insets mirror the "border: 1px; padding: 0 6px
+// 0 9px" that MainWindow::updateInputStyle() gives the box; if Qt fixes the
+// style, this yields the same geometry the style would.
+class PingSizeSpinBox : public QSpinBox
+{
+public:
+    using QSpinBox::QSpinBox;
+
+protected:
+    void resizeEvent(QResizeEvent* event) override
+    {
+        QSpinBox::resizeEvent(event);
+        fixEditGeometry();
+    }
+    void changeEvent(QEvent* event) override
+    {
+        QSpinBox::changeEvent(event);
+        if (event->type() == QEvent::StyleChange)
+            fixEditGeometry();
+    }
+
+private:
+    void fixEditGeometry()
+    {
+        if (QLineEdit* edit = lineEdit())
+            edit->setGeometry(rect().adjusted(1 + 9, 1, -(1 + 6), -1));
     }
 };
 
@@ -920,6 +954,17 @@ inline Qt::CursorShape ovCursorForEdges(Qt::Edges edges)
 }
 #endif
 
+// Show delay shared by every custom tooltip (caption buttons, icon buttons,
+// results-table cells), in milliseconds: QStyleHints::toolTipWakeUpDelay()
+// (Qt's default is 700 ms; a platform theme or the app may override it).
+// Callers read it each time they start their timer, so a change made while
+// the app runs applies to the next tooltip. Clamped at 0: QTimer cannot take
+// a negative interval.
+inline int tooltipDelayMs()
+{
+    return qMax(0, QGuiApplication::styleHints()->toolTipWakeUpDelayAsMSec());
+}
+
 // Which system caption button a CaptionButton represents.
 enum class CaptionButtonKind { Minimize, Maximize, Close };
 
@@ -938,8 +983,7 @@ public:
         setCursor(Qt::ArrowCursor);
         setFocusPolicy(Qt::NoFocus);
 
-        m_tipTimer.setSingleShot(true);
-        m_tipTimer.setInterval(600);
+        m_tipTimer.setSingleShot(true);   // delay: tooltipDelayMs(), set at start()
         connect(&m_tipTimer, &QTimer::timeout, this, [this]() { showTip(); });
     }
 
@@ -962,7 +1006,7 @@ public:
         m_hovered = h;
         update();
         if (m_tipSC != 0) {
-            if (h) m_tipTimer.start();
+            if (h) m_tipTimer.start(tooltipDelayMs());
             else { m_tipTimer.stop(); hideTip(); }
         }
     }
@@ -1086,7 +1130,7 @@ protected:
     {
         m_hovered = true;
         update();
-        if (m_tipSC != 0) m_tipTimer.start();
+        if (m_tipSC != 0) m_tipTimer.start(tooltipDelayMs());
     }
     void leaveEvent(QEvent*) override
     {
@@ -1366,14 +1410,10 @@ private:
 //  Results-table building blocks
 // ==========================================================================
 
-// Logical table columns. The two trailing spacer columns sit at ColCount and
-// ColCount + 1 (the first of them is moved to visual position 0 as the left
-// edge padding). Must stay in sync with the COLUMNS string list.
-enum Column {
-    ColHop = 0, ColAsn, ColHostname, ColIp, ColLoss, ColSent, ColRecv,
-    ColBest, ColAvrg, ColWrst, ColLast, ColJttr,
-    ColCount
-};
+// The Column enum and COLUMNS header strings live in report_core.h now
+// (shared with the CLI report builder) — the two trailing spacer columns
+// below (ColCount and ColCount + 1) are a table-only rendering detail on
+// top of them, for the left-edge padding.
 
 // Paints the results table: zebra striping, row/cell hover highlight, the
 // packet-loss bar in the Loss column, and themed, elided text elsewhere.
@@ -2263,7 +2303,6 @@ private:
     QString buildTextExport() const;
     QString buildJsonExport() const;
     static bool    isWindowsDarkMode();
-    static QString lookupASN(const QString& ip, bool ipv6);
     QString        getCachedASN(const QString& ip, bool ipv6) const;
     void           updateToolbarResponsiveLayout();
     bool           alignTargetEditToLossBar();
@@ -2309,7 +2348,6 @@ private:
     bool            m_updateAvailable = false;
     QString         m_updateVersion;
     QString         m_updateReleaseUrl;
-    QProcess*       m_updateProcess = nullptr;
     QTimer          m_iconTipTimer;
     // Restores the Copy button's label after its "Copied" confirmation.
     QTimer          m_copyFeedbackTimer;
@@ -2324,7 +2362,7 @@ private:
     Win11Tooltip*   m_cellTip = nullptr;
     QPersistentModelIndex m_tipIndex;   // cell whose tooltip is on screen
     QString               m_tipText;    // its last rendered text
-    QTimer                m_cellTipTimer;   // 600 ms show delay for cell tooltips
+    QTimer                m_cellTipTimer;   // show delay set at start() (tooltipDelayMs())
     QModelIndex           m_cellTipHover;   // cell currently hovered (delay target)
     QString cellTooltipText(const QModelIndex& idx) const;
     QTableWidget*   m_table        = nullptr;
@@ -2355,8 +2393,9 @@ private:
     // address) must hold steady for a short window before the "discovering
     // route" overlay is dismissed, so the table is only shown once discovery
     // has actually settled and rows won't change right after the reveal.
-    QByteArray m_warmupFingerprint;
-    int        m_warmupStableCount = 0;
+    // The decision logic itself lives in report_core.h's warmupRouteSettled()
+    // (shared with the CLI report mode); this is just its across-calls state.
+    WarmupFingerprint m_warmupFp;
     QElapsedTimer m_elapsed;
     // Wall-clock time the counting window began (set alongside m_elapsed's
     // restart in onWarmupEnd) and the test's duration for reports. While a
@@ -2366,6 +2405,9 @@ private:
     // built well after the test actually stopped.
     QDateTime m_testStartTime;
     qint64    m_testDurationMs = 0;
+    // Duration last shown in the title bar (updated by the 1 s timer); live
+    // reports use it so they always match the window.
+    qint64    m_shownDurationMs = 0;
     // Address family of the trace in the table, for describing its statuses —
     // also in a report made after Stop, when the IPv6 checkbox is editable
     // again and may no longer match.
@@ -2378,12 +2420,17 @@ private:
     // Export label the report with this, not with the input field, which the
     // user may have edited since (it is editable again once a trace stops).
     QString   m_reportTarget;
+    // The report rows computed from m_finalState at Stop — see m_finalState
+    // above for why a frozen copy is kept instead of recomputing from a live
+    // (and by then cleared) m_asnCache: recomputing after clear() would show
+    // "-" for every ASN and re-trigger lookups nobody asked for a stopped
+    // trace to redo.
+    std::vector<ReportRow> m_finalRows;
     // Bumped by every Start and every Stop. A name lookup carries the value
     // its Start got, and its result is ignored once that is no longer
     // current (see onStartStop()).
     quint64   m_startGen = 0;
-    mutable std::unordered_map<std::string, QString> m_asnCache;
-    mutable std::unordered_set<std::string>           m_asnPending;
+    AsnCache  m_asnCache;
     bool    m_keyboardFocus = false;
 
     QColor  m_accent { 0x4C, 0xC2, 0xFF };
