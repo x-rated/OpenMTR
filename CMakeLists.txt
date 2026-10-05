@@ -37,7 +37,7 @@ set(CMAKE_AUTORCC ON)
 # of which require a strictly numeric value.
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/version.h"
     "#pragma once\n"
-    "#define OPENMTR_VERSION       \"${PROJECT_VERSION} DEV\"\n"
+    "#define OPENMTR_VERSION       \"${PROJECT_VERSION}\"\n"
     "#define OPENMTR_VERSION_TITLE \"OpenMTR\"\n"
 )
 
