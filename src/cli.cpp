@@ -65,17 +65,21 @@ enum ExitCode {
 
 enum class OutputFormat { Text, Json, Csv };
 
-// Set for the duration of run() so the OS signal/console handler (which
-// cannot capture any context) has somewhere to report Ctrl+C.
-std::atomic<bool>* g_interruptedFlag = nullptr;
-std::stop_source*  g_stopSource      = nullptr;
+// Set by the Ctrl+C handler, polled by run()'s loops. A lock-free atomic is
+// all a POSIX signal handler may touch: the handler used to call
+// std::stop_source::request_stop() as well, which takes locks and runs the
+// engine's stop callback - not async-signal-safe, so a Ctrl+C landing at
+// the wrong moment could deadlock. run() requests the stop itself, on its
+// own thread, within one loop tick (at most 250 ms) of seeing this flag.
+std::atomic<bool> g_interrupted{false};
+static_assert(std::atomic<bool>::is_always_lock_free,
+              "the Ctrl+C handler needs a lock-free flag");
 
 #ifdef _WIN32
 BOOL WINAPI consoleCtrlHandler(DWORD signalType)
 {
     if (signalType == CTRL_C_EVENT || signalType == CTRL_BREAK_EVENT) {
-        if (g_interruptedFlag) g_interruptedFlag->store(true);
-        if (g_stopSource)      g_stopSource->request_stop();
+        g_interrupted.store(true);
         return TRUE;
     }
     return FALSE;
@@ -83,8 +87,7 @@ BOOL WINAPI consoleCtrlHandler(DWORD signalType)
 #else
 void sigintHandler(int)
 {
-    if (g_interruptedFlag) g_interruptedFlag->store(true);
-    if (g_stopSource)      g_stopSource->request_stop();
+    g_interrupted.store(true);
 }
 #endif
 
@@ -348,10 +351,9 @@ int cli::run(int argc, char** argv)
     }).detach();
 #endif // OPENMTR_ENABLE_UPDATE_CHECK
 
-    std::atomic<bool> interrupted{false};
+    std::atomic<bool>& interrupted = g_interrupted;
+    interrupted.store(false);
     std::stop_source  stopSource;
-    g_interruptedFlag = &interrupted;
-    g_stopSource      = &stopSource;
 #ifdef _WIN32
     SetConsoleCtrlHandler(consoleCtrlHandler, TRUE);
 #else
@@ -361,8 +363,10 @@ int cli::run(int argc, char** argv)
     CliOptionsProvider  provider(opts.pingSize);
     OpenMTRNetWrapper    net(&provider);
     if (net.DoTrace(stopSource.get_token(), addr) != 0) {
-        // DoTrace() already reported the specific failure itself (see
-        // OpenMTRNetWrapper::DoTrace in tracer.h).
+        // An empty text means DoTrace() already reported the failure itself
+        // (see OpenMTRNetWrapper::DoTrace in tracer.h).
+        if (!net.lastErrorText().empty())
+            std::fprintf(stderr, "%s\n", net.lastErrorText().c_str());
         return ExitEngine;
     }
 

@@ -243,6 +243,36 @@ static int stop_right_after_start()
     return 0;
 }
 
+// A refused ICMP socket must fail DoTrace() at once, with the errno and a
+// readable reason, instead of starting a trace thread that ends silently and
+// leaves every hop empty (the Linux default net.ipv4.ping_group_range, "1 0",
+// refuses even root). Only runnable where the socket is refused: CI runs it
+// in a fresh network namespace, which always starts out with "1 0".
+static int refused_socket()
+{
+    if (pingSocketAvailable(AF_INET)) {
+        std::printf("skipped: unprivileged ICMP sockets are allowed here\n");
+        return 77;
+    }
+    struct Options : IOpenMTROptionsProvider {
+        unsigned getPingSize() const noexcept override { return 64; }
+    } options;
+    SOCKADDR_INET dest{};
+    dest.Ipv4 = loopback4();
+
+    std::stop_source stop;
+    OpenMTRNetWrapper trace(&options);
+    const int rc = trace.DoTrace(stop.get_token(), dest);
+    std::printf("DoTrace() = %d, error %d: %s\n", rc, trace.lastError(), trace.lastErrorText().c_str());
+    CHECK(rc == -1);
+    CHECK(trace.isDone());
+    CHECK(trace.lastError() == EACCES || trace.lastError() == EPERM);
+#ifdef __linux__
+    CHECK(trace.lastErrorText().find("ping_group_range") != std::string::npos);
+#endif
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     const std::string name = argc > 1 ? argv[1] : "";
@@ -257,6 +287,8 @@ int main(int argc, char** argv)
         rc = stop_before_start();
     else if (name == "stop_right_after_start")
         rc = stop_right_after_start();
+    else if (name == "refused_socket")
+        rc = refused_socket();
     else {
         std::printf("unknown case \"%s\"\n", name.c_str());
         return 2;
