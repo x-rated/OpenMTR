@@ -25,3 +25,9 @@ foreach(name IN ITEMS dns_lifetime status_text v6_silent_first_hop
     # reported as skipped, never as passed.
     set_tests_properties(engine.${name} PROPERTIES TIMEOUT 20 SKIP_RETURN_CODE 77)
 endforeach()
+
+# Cases that open no ICMP socket.
+foreach(name IN ITEMS icmp_checksum name_control_chars no_thread_for_dns)
+    add_test(NAME engine.${name} COMMAND engine_tests ${name})
+    set_tests_properties(engine.${name} PROPERTIES TIMEOUT 20 SKIP_RETURN_CODE 77)
+endforeach()

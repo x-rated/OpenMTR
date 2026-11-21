@@ -6,13 +6,19 @@
 #include "tracer.h"
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <future>
 #include <memory>
 #include <stop_token>
 #include <string>
+#include <system_error>
 #include <thread>
+
+#ifdef __linux__
+#include <sys/resource.h>
+#endif
 
 static int g_failures = 0;
 
@@ -116,6 +122,106 @@ static void status_text()
         CHECK(nameOf(n, hop).rfind("Not sent: ", 0) == 0);
         ++hop;
     }
+}
+
+// The ICMPv4 checksum as the bytes that go on the wire: RFC 1071's own
+// example, the same with one more byte, and an echo request with an odd
+// payload added up the way a receiver does. Every byte order must produce
+// the same bytes; an odd length is what a big-endian CPU got wrong, so on a
+// little-endian machine this passed before the fix too.
+static void icmp_checksum()
+{
+    const unsigned char even[] = { 0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7 };
+    const unsigned char odd[]  = { 0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7, 0xa5 };
+    unsigned char wire[2];
+
+    uint16_t sum = OpenMTRIcmpChecksum(even, sizeof(even));
+    std::memcpy(wire, &sum, sizeof(wire));
+    CHECK(wire[0] == 0x22 && wire[1] == 0x0d);
+
+    sum = OpenMTRIcmpChecksum(odd, sizeof(odd));
+    std::memcpy(wire, &sum, sizeof(wire));
+    CHECK(wire[0] == 0x7d && wire[1] == 0x0c);
+
+    unsigned char pkt[8 + 65];
+    std::memset(pkt, ' ', sizeof(pkt));
+    const unsigned char header[8] = { 8, 0, 0, 0, 0x12, 0x34, 0x08, 0x01 };   // echo request, checksum 0
+    std::memcpy(pkt, header, sizeof(header));
+    sum = OpenMTRIcmpChecksum(pkt, sizeof(pkt));
+    std::memcpy(pkt + 2, &sum, sizeof(sum));
+    uint32_t total = 0;
+    for (size_t i = 0; i < sizeof(pkt); i += 2)
+        total += (static_cast<uint32_t>(pkt[i]) << 8) | (i + 1 < sizeof(pkt) ? pkt[i + 1] : 0u);
+    while (total >> 16)
+        total = (total >> 16) + (total & 0xFFFF);
+    CHECK(total == 0xFFFF);
+}
+
+// A PTR record can hold any bytes. SetName() turns control characters into
+// '?', so that a name cannot start a new CSV row or a terminal escape
+// sequence; everything else, bytes above 0x7F included, stays.
+static void name_control_chars()
+{
+    OpenMTROptions o;
+    o.useDNS = false;
+    OpenMTRNet n(o);
+
+    char hostile[] = "a\rb\n=1+1\x1b[31m\x7f\tend.example";
+    n.SetName(0, hostile);
+    CHECK(nameOf(n, 0) == "a?b?=1+1?[31m??end.example");
+
+    char plain[] = "router-1.example.net";
+    n.SetName(1, plain);
+    CHECK(nameOf(n, 1) == "router-1.example.net");
+
+    char utf8[] = "b\xc3\xbc" "cher.example";
+    n.SetName(2, utf8);
+    CHECK(nameOf(n, 2) == "b\xc3\xbc" "cher.example");
+}
+
+// SetAddr() starts a reverse-DNS thread for a hop's new address. With no
+// thread to be had std::thread throws, which used to end the process; now
+// the hop keeps its address and gets no name. Linux counts threads against
+// RLIMIT_NPROC (though not for root), which makes the failure easy to cause
+// there; elsewhere the case is skipped.
+static int no_thread_for_dns()
+{
+#ifdef __linux__
+    if (::geteuid() == 0) {
+        std::printf("skipped: root is not held to RLIMIT_NPROC\n");
+        return 77;
+    }
+    struct rlimit before{};
+    if (::getrlimit(RLIMIT_NPROC, &before) != 0)
+        return 77;
+    OpenMTROptions o;
+    o.useDNS = false;
+    OpenMTRNet n(o);
+
+    struct rlimit none = before;
+    none.rlim_cur = 0;
+    if (::setrlimit(RLIMIT_NPROC, &none) != 0)
+        return 77;
+    bool refused = false;                 // does the limit bite here at all?
+    try {
+        std::thread([] {}).detach();
+    } catch (const std::system_error&) {
+        refused = true;
+    }
+    if (refused)
+        n.SetAddr(0, htonl(INADDR_LOOPBACK));
+    ::setrlimit(RLIMIT_NPROC, &before);
+    if (!refused) {
+        std::printf("skipped: RLIMIT_NPROC did not refuse a thread here\n");
+        return 77;
+    }
+    CHECK(n.GetHopSnapshot(0).addr.Ipv4.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+    CHECK(nameOf(n, 0).empty());
+    return 0;
+#else
+    std::printf("skipped: no way to run out of threads on purpose here\n");
+    return 77;
+#endif
 }
 
 // Whether this process may open an unprivileged ICMP socket of that family
@@ -251,6 +357,12 @@ int main(int argc, char** argv)
         dns_lifetime();
     else if (name == "status_text")
         status_text();
+    else if (name == "icmp_checksum")
+        icmp_checksum();
+    else if (name == "name_control_chars")
+        name_control_chars();
+    else if (name == "no_thread_for_dns")
+        rc = no_thread_for_dns();
     else if (name == "v6_silent_first_hop")
         rc = v6_silent_first_hop();
     else if (name == "stop_before_start")

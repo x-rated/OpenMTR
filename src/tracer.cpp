@@ -20,6 +20,7 @@
 #else
 #include <cerrno>
 #include <chrono>
+#include <system_error>
 
 // Windows CRT helpers used throughout this file, backed by their POSIX
 // equivalents.
@@ -556,19 +557,25 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
 #else
 // Internet checksum (RFC 1071) over an ICMPv4 packet — the kernel doesn't
 // compute this for us on a raw/dgram ICMP socket the way it does for TCP/UDP.
-static uint16_t calculate_checksum(const uint16_t* addr, int count)
+// The result goes into the packet with memcpy(), on either byte order: the
+// 16-bit words are summed as they lie in memory, and an odd last byte is the
+// first byte of a word padded with zero. (Added as a plain number it is the
+// low byte, which is only right on a little-endian CPU.)
+uint16_t OpenMTRIcmpChecksum(const unsigned char* data, size_t length)
 {
-    int32_t sum = 0;
-    const uint16_t* w = addr;
-    int nleft = count;
-    while (nleft > 1) {
-        sum += *w++;
-        nleft -= 2;
+    uint32_t sum = 0;
+    for (; length > 1; data += 2, length -= 2) {
+        uint16_t word;
+        std::memcpy(&word, data, sizeof(word));
+        sum += word;
     }
-    if (nleft == 1)
-        sum += *reinterpret_cast<const uint8_t*>(w);
-    sum  = (sum >> 16) + (sum & 0xFFFF);
-    sum += (sum >> 16);
+    if (length == 1) {
+        uint16_t word = 0;
+        std::memcpy(&word, data, 1);
+        sum += word;
+    }
+    while (sum >> 16)
+        sum = (sum >> 16) + (sum & 0xFFFF);
     return static_cast<uint16_t>(~sum);
 }
 
@@ -811,7 +818,7 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
             std::vector<unsigned char> pkt(ICMP_MINLEN + payloadLen, ' ');
             std::memcpy(pkt.data(), &req4, ICMP_MINLEN);
 
-            uint16_t cksum = calculate_checksum(reinterpret_cast<const uint16_t*>(pkt.data()), pkt.size());
+            uint16_t cksum = OpenMTRIcmpChecksum(pkt.data(), pkt.size());
             std::memcpy(pkt.data() + 2, &cksum, sizeof(cksum));
 
             const ssize_t sent = sendProbe(pkt, reinterpret_cast<sockaddr*>(&destAddr4), sizeof(sockaddr_in));
@@ -1465,7 +1472,14 @@ void OpenMTRNet::SetAddr(int at, u_long addr)
         if (_beginthread(DnsResolverThread, 0, args) == static_cast<uintptr_t>(-1))
             delete args;
 #else
-        std::thread([args]() { DnsResolverThread(args); }).detach();
+        // std::thread throws when the system has no thread to give; left
+        // uncaught, that ends the whole process. The hop then keeps its
+        // address for a name.
+        try {
+            std::thread([args]() { DnsResolverThread(args); }).detach();
+        } catch (const std::system_error&) {
+            delete args;
+        }
 #endif
     }
     m_maxHops.store(RecalcMaxLocked(), std::memory_order_relaxed);
@@ -1526,17 +1540,32 @@ void OpenMTRNet::SetAddr6(int at, IPV6_ADDRESS_EX addrex)
         auto* args  = new DnsResolverArgs;
         args->index = at;
         args->sink  = m_dnsSink;
-        std::thread([args]() { DnsResolverThread(args); }).detach();
+        // std::thread throws when the system has no thread to give; left
+        // uncaught, that ends the whole process. The hop then keeps its
+        // address for a name.
+        try {
+            std::thread([args]() { DnsResolverThread(args); }).detach();
+        } catch (const std::system_error&) {
+            delete args;
+        }
     }
 #endif
     m_maxHops.store(RecalcMaxLocked(), std::memory_order_relaxed);
 }
 
-// Store the resolved host name for hop `at`.
+// Store the resolved host name for hop `at`. A PTR record can hold any
+// bytes, and not every C library filters them, so control characters become
+// '?' here: in the reports a line feed would start a new CSV row, and ESC a
+// terminal escape sequence.
 void OpenMTRNet::SetName(int at, char* n)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     strcpy_s(m_hops[at].name, sizeof(m_hops[at].name), n);
+    for (char* c = m_hops[at].name; *c; ++c) {
+        const unsigned char u = static_cast<unsigned char>(*c);
+        if (u < 0x20 || u == 0x7F)
+            *c = '?';
+    }
     m_hops[at].nameIsLocal = false;
 }
 

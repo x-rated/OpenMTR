@@ -15,6 +15,7 @@
 #endif
 
 #include <algorithm>
+#include <system_error>
 #include <thread>
 
 // True for addresses Team Cymru cannot answer for, so the query is skipped.
@@ -51,6 +52,21 @@ bool isUnroutableForAsn(const QString& ip)
     }
 
     return true;   // not an address we can query for
+}
+
+// The first field of a Team Cymru answer: one AS number, or several separated
+// by spaces for a multi-origin prefix ("64500", "64500 64501"). It is text
+// from DNS that goes into the table and the reports, so anything else is
+// dropped rather than passed on.
+static bool isAsnList(const QString& asn)
+{
+    if (asn.isEmpty())
+        return false;
+    for (const QChar c : asn) {
+        if ((c < QLatin1Char('0') || c > QLatin1Char('9')) && c != QLatin1Char(' '))
+            return false;
+    }
+    return true;
 }
 
 // Resolve an IP to its ASN via Team Cymru's DNS service. Skips private and
@@ -92,7 +108,7 @@ QString lookupASN(const QString& ip, bool ipv6)
         if (r->wType == DNS_TYPE_TEXT && r->Data.TXT.dwStringCount > 0) {
             QString txt = QString::fromWCharArray(r->Data.TXT.pStringArray[0]);
             QString asn = txt.split('|').first().trimmed();
-            if (!asn.isEmpty() && asn != "0") result = asn;
+            if (isAsnList(asn) && asn != "0") result = asn;
             break;
         }
     }
@@ -109,7 +125,7 @@ QString lookupASN(const QString& ip, bool ipv6)
         if (out.startsWith('"')) out.remove(0, 1);
         if (out.endsWith('"'))   out.chop(1);
         QString asn = out.split('|').first().trimmed();
-        if (!asn.isEmpty() && asn != "0")
+        if (isAsnList(asn) && asn != "0")
             return asn;
     }
     return QString();
@@ -135,12 +151,22 @@ QString AsnCache::get(const QString& ip, bool ipv6) const
             return "-";   // already resolving
     }
 
-    std::thread([shared, ip, ipv6, key]() {
-        QString asn = lookupASN(ip, ipv6);
+    try {
+        std::thread([shared, ip, ipv6, key]() {
+            QString asn = lookupASN(ip, ipv6);
+            std::lock_guard<std::mutex> lock(shared->mutex);
+            shared->cache[key] = asn;
+            shared->pending.erase(key);
+        }).detach();
+    } catch (const std::system_error&) {
+        // std::thread throws when the system has no thread to give; left
+        // uncaught, that ends the whole process. Settle the address as
+        // having no ASN: left pending, it would hold up
+        // dnsAndAsnSettled() until its deadline.
         std::lock_guard<std::mutex> lock(shared->mutex);
-        shared->cache[key] = asn;
+        shared->cache[key] = QString();
         shared->pending.erase(key);
-    }).detach();
+    }
 
     return "-";
 }
