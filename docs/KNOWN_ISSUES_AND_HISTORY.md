@@ -105,6 +105,25 @@ the GUI exe, like Visual Studio's devenv.com/.exe) — would work on every
 Windows version, at the cost of a second artifact and a tiny extra
 executable, the kind of file AV heuristics tend to look at suspiciously.
 
+### Refused ICMP socket on Linux: an empty trace instead of an error
+On Linux the POSIX engine needs an unprivileged ICMP ("ping") socket, which
+the kernel only grants to groups inside `net.ipv4.ping_group_range`. The
+kernel default, `1 0`, grants it to nobody — not even root — and while most
+desktop distributions widen it (systemd sets `0 2147483647`), containers,
+fresh network namespaces and OpenWrt keep the default. `socket()` failing
+used to end the trace thread silently: `OpenMTRNetWrapper::DoTrace()` had
+already returned 0, so the GUI showed an empty table that counted nothing
+until Stop, and `--report` went through the whole warm-up before printing a
+table of dashes with exit code 1 instead of the documented 4. Fixed by
+`OpenMTRNet::PrepareSocket()`, which opens and configures the socket on the
+caller's thread before the trace thread starts: `DoTrace()` now returns -1
+with `lastError()`/`lastErrorText()`, the GUI shows that text in a dialog
+and returns to idle, and the CLI prints it and exits with 4. The same change
+made the CLI's Ctrl+C handler async-signal-safe (it only sets a lock-free
+flag now; it used to call `std::stop_source::request_stop()`).
+**Regression test**: `refused_socket`. It needs a refused socket, so it skips
+wherever one opens; an unprivileged user in a fresh network namespace gets one.
+
 ### "Finishing..." progress line running into the report on stdout
 `Progress`'s line-clear only happened in its destructor, which fires at
 function-scope end — *after* the report had already been written to stdout.

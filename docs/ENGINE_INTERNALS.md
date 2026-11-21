@@ -63,7 +63,16 @@ understanding why each platform branch exists.
 hop is ever heard from — every row but the destination reads as a timeout,
 and the app looks like a plain ping pretending to be a traceroute. Setup
 failure (`IP_RECVERR`) is treated as **fatal**, not ignorable, for exactly
-this reason (`tracer.cpp` ~L667).
+this reason (`OpenMTRNet::PrepareSocket()`).
+
+**Socket setup happens before the trace thread starts**:
+`OpenMTRNetWrapper::DoTrace()` calls `OpenMTRNet::PrepareSocket()` on the
+caller's thread, so a socket that cannot be opened or configured (on Linux
+typically `net.ipv4.ping_group_range`, whose kernel default `1 0` refuses
+everyone, root included) fails Start with `-1` and
+`lastError()`/`lastErrorText()` instead of a thread that ends silently.
+`OpenMTRNet::DoTrace()` still prepares a socket itself when called directly
+(as the engine tests do).
 
 **Why macOS needs its own echo-id filter** (`filterEchoId = true` on that
 platform, `false` on Linux): two concurrent traces (a second OpenMTR, `ping`,

@@ -2787,14 +2787,32 @@ void MainWindow::onStartStop()
                     // Checking m_tracing is not enough: after Stop and a new
                     // Start it is true again, for a different trace.
                     if (!self || self->m_startGen != gen) return;
-                    if (!resolved) {
+                    // Back to idle, as if Start had not been pressed, with
+                    // `message` (if any) saying why.
+                    const auto abandonStart = [&self, darkMode](const QString& message) {
                         self->m_tracing = false;
                         self->m_startStopBtn->setText("Start");
                         self->m_startStopBtn->setProperty("tracing", false);
                         self->m_startStopBtn->style()->polish(self->m_startStopBtn);
                         self->m_startStopBtn->setEnabled(!self->m_targetEdit->text().trimmed().isEmpty());
                         self->setTracingInputsEnabled(true);
-                        MicaDialog::show(self, "OpenMTR", QString("Could not resolve \"%1\".").arg(target), darkMode);
+                        if (!message.isEmpty())
+                            MicaDialog::show(self, "OpenMTR", message, darkMode);
+                    };
+                    if (!resolved) {
+                        abandonStart(QString("Could not resolve \"%1\".").arg(target));
+                        return;
+                    }
+                    // Started before any of the state below changes, so a
+                    // trace that cannot start (no ICMP socket: on Linux
+                    // typically net.ipv4.ping_group_range) leaves the window
+                    // exactly as it was, with the reason in a dialog. Its
+                    // return value used to be ignored here, which left an
+                    // empty table counting nothing until Stop. An empty
+                    // lastErrorText() means DoTrace() already showed its own
+                    // message (see OpenMTRNetWrapper::DoTrace in tracer.h).
+                    if (net->DoTrace(self->m_stopSource.get_token(), addr) != 0) {
+                        abandonStart(QString::fromStdString(net->lastErrorText()));
                         return;
                     }
                     self->m_ipv6Check->setChecked(ipv6);
@@ -2810,7 +2828,6 @@ void MainWindow::onStartStop()
                     self->m_stack->setCurrentIndex(1);
                     self->m_copyBtn->setEnabled(false);
                     self->m_exportBtn->setEnabled(false);
-                    self->m_net->DoTrace(self->m_stopSource.get_token(), addr);
 #ifdef Q_OS_MAC
                     if (!self->m_macTraceActivity)
                         self->m_macTraceActivity = beginMacOsTraceActivity();

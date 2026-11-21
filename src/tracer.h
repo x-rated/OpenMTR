@@ -291,6 +291,16 @@ public:
     explicit OpenMTRNet(const OpenMTROptions& opts);
     ~OpenMTRNet();
 
+    // Opens and configures the ICMP socket the next DoTrace() will use, for
+    // `family` (AF_INET or AF_INET6). Returns 0, or the errno value that
+    // made it fail. OpenMTRNetWrapper::DoTrace() calls it on the caller's
+    // thread, before the trace thread exists, so that a refused socket is
+    // reported at Start with its exact cause instead of the trace thread
+    // ending silently and leaving an empty table behind. DoTrace() calls it
+    // itself when nothing has prepared a socket for its family (the engine
+    // tests start traces that way). Windows: the ICMP handles are opened by
+    // the constructor (see `initialized`), so this always returns 0 there.
+    int  PrepareSocket(int family);
     void DoTrace(sockaddr* dest);
     void StopTrace();
     void ResetHops();
@@ -400,6 +410,13 @@ private:
     HANDLE m_stopEvent = nullptr;
 #else
     int m_stopPipe[2] = {-1, -1};
+
+    // The socket PrepareSocket() opened, waiting for DoTrace() to take it
+    // over (-1 when there is none), and the address family it is for.
+    // DoTrace() closes the socket when the trace ends; the destructor closes
+    // one that was prepared but never used.
+    int m_fd       = -1;
+    int m_fdFamily = AF_UNSPEC;
 #endif
 
     // Shared with the detached reverse-DNS workers — see DnsSink above.
@@ -474,6 +491,11 @@ inline std::wstring addr_to_wstring(const SOCKADDR_INET& addr)
 //  OpenMTRNetWrapper — threaded facade
 // ==========================================================================
 
+// Why OpenMTRNet::PrepareSocket() failed with `err` for `family`, as one or
+// two sentences for the user: the system's own message for the error, plus
+// what to do about it where that is known (the Linux ping-socket sysctl).
+std::string OpenMTRSocketErrorText(int err, int family);
+
 // Owns an OpenMTRNet on a detached worker thread and exposes a small, safe
 // surface to the UI: DoTrace() to start, getCurrentState() for a snapshot of
 // every hop, and isDone()/GetMax() for progress. The destructor stops the
@@ -493,9 +515,15 @@ public:
         }
     }
 
+    // Starts the trace and returns 0, or returns -1 when it cannot start. On
+    // -1, lastErrorText() says why for the caller to show, unless it is
+    // empty: then DoTrace() has already reported the failure itself (the
+    // ICMP handle check below, unchanged from before lastErrorText existed).
     int DoTrace(std::stop_token stopToken, SOCKADDR_INET dest)
     {
         m_done.store(false);
+        m_lastError = 0;
+        m_lastErrorText.clear();
 
         OpenMTROptions opts;
         opts.pingsize = m_provider->getPingSize();
@@ -523,6 +551,20 @@ public:
 #else
             fprintf(stderr, "Error opening ICMP handle!\n");
 #endif
+            m_done.store(true);
+            return -1;
+        }
+
+        // Open the socket here, on the caller's thread, rather than at the
+        // top of the trace thread: a refusal (on Linux typically
+        // net.ipv4.ping_group_range) then fails Start with its exact errno,
+        // where it used to end the thread silently and leave every hop
+        // empty — in the CLI after the whole warm-up, with exit code 1
+        // instead of 4.
+        const int family = (dest.Ipv4.sin_family == AF_INET) ? AF_INET : AF_INET6;
+        if (const int err = m_net->PrepareSocket(family)) {
+            m_lastError     = err;
+            m_lastErrorText = OpenMTRSocketErrorText(err, family);
             m_done.store(true);
             return -1;
         }
@@ -602,6 +644,9 @@ public:
     }
 
     bool isDone()  const { return m_done.load(); }
+    // Why the last DoTrace() returned -1 (see there); 0 / empty otherwise.
+    int                lastError()     const { return m_lastError; }
+    const std::string& lastErrorText() const { return m_lastErrorText; }
     int  GetMax()  const { return m_net ? m_net->GetMax() : MAX_HOPS; }
     // Restart statistics from this moment (see OpenMTRNet::ResetStats).
     void resetStats() { if (m_net) m_net->ResetStats(); }
@@ -611,4 +656,6 @@ private:
     std::unique_ptr<OpenMTRNet> m_net;
     std::thread                m_thread;
     std::atomic<bool>          m_done{ true };
+    int                        m_lastError = 0;
+    std::string                m_lastErrorText;
 };

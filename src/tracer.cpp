@@ -238,8 +238,108 @@ OpenMTRNet::~OpenMTRNet()
         ::close(m_stopPipe[1]);
         m_stopPipe[1] = -1;
     }
+    // Prepared by PrepareSocket() but never taken over by a DoTrace().
+    if (m_fd != -1) {
+        ::close(m_fd);
+        m_fd = -1;
+    }
 #endif
 }
+
+#ifdef _WIN32
+int OpenMTRNet::PrepareSocket(int /*family*/)
+{
+    return 0;   // the ICMP handles were opened by the constructor
+}
+
+std::string OpenMTRSocketErrorText(int /*err*/, int family)
+{
+    // Not reached: PrepareSocket() cannot fail on Windows.
+    return family == AF_INET6 ? "Cannot open an ICMPv6 handle." : "Cannot open an ICMP handle.";
+}
+#else
+int OpenMTRNet::PrepareSocket(int family)
+{
+    if (m_fd != -1) {
+        ::close(m_fd);
+        m_fd       = -1;
+        m_fdFamily = AF_UNSPEC;
+    }
+
+    const bool isV6 = (family == AF_INET6);
+    const int  fd   = isV6 ? ::socket(AF_INET6, SOCK_DGRAM, IPPROTO_ICMPV6)
+                           : ::socket(AF_INET,  SOCK_DGRAM, IPPROTO_ICMP);
+    if (fd < 0)
+        return errno != 0 ? errno : EIO;
+
+    // Non-blocking is a hard requirement: the dispatch loop drains the
+    // socket until EAGAIN, which on a blocking socket would park the whole
+    // trace on the last recvfrom().
+    if (::fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
+        const int err = errno;
+        ::close(fd);
+        return err != 0 ? err : EIO;
+    }
+
+#ifdef __APPLE__
+    // Room for the largest reply. macOS gives an ICMP socket an 8 KB receive
+    // buffer (net.inet.raw.recvspace = 8192), and an echo reply to a probe
+    // of about 8133 bytes or more does not fit in it with its overhead, so
+    // the kernel dropped it and every probe at those ping sizes timed out.
+    // A refusal is not fatal: everything else works as before.
+    int rcvbuf = 64 * 1024;
+    (void)::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+#endif
+
+#ifdef __linux__
+    // Linux ping sockets don't hand ICMP error messages (Time Exceeded,
+    // Destination Unreachable) to a plain recvfrom() the way macOS/BSD's
+    // do — those get delivered to the socket's error queue instead, which
+    // has to be explicitly enabled and drained separately. See the
+    // POLLERR handling in DoTrace(). (No effect / not needed on macOS or BSD.)
+    //
+    // Failure here is fatal rather than ignorable: without the error queue
+    // no intermediate hop is ever heard from, so every row but the
+    // destination would read as a timeout and the app would look like a
+    // plain ping pretending to be a traceroute. Better to stop with the
+    // engine's own error path than to draw a confidently wrong route.
+    int recverr = 1;
+    const int recverrRc = isV6
+        ? ::setsockopt(fd, IPPROTO_IPV6, IPV6_RECVERR, &recverr, sizeof(recverr))
+        : ::setsockopt(fd, IPPROTO_IP,   IP_RECVERR,   &recverr, sizeof(recverr));
+    if (recverrRc < 0) {
+        const int err = errno;
+        ::close(fd);
+        return err != 0 ? err : EIO;
+    }
+#endif
+
+    m_fd       = fd;
+    m_fdFamily = family;
+    return 0;
+}
+
+std::string OpenMTRSocketErrorText(int err, int family)
+{
+    std::string text = (family == AF_INET6) ? "Cannot open an ICMPv6 socket: "
+                                            : "Cannot open an ICMP socket: ";
+    text += std::strerror(err);
+    text += '.';
+    if (err == EAFNOSUPPORT && family == AF_INET6)
+        text += " IPv6 is not available on this system.";
+#ifdef __linux__
+    // Linux allows unprivileged ICMP ("ping") sockets only to the groups in
+    // net.ipv4.ping_group_range (it covers ICMPv6 too). The kernel default,
+    // "1 0", allows nobody, not even root; many distributions widen it, but
+    // not all of them do, and containers and OpenWrt keep the default.
+    if (err == EACCES || err == EPERM)
+        text += " Unprivileged ping sockets are not allowed for this user's group by"
+                " net.ipv4.ping_group_range; allow them with:"
+                " sysctl -w net.ipv4.ping_group_range=\"0 2147483647\"";
+#endif
+    return text;
+}
+#endif
 
 // Zero the entire hop table so a fresh trace starts from clean statistics.
 void OpenMTRNet::ResetHops()
@@ -638,53 +738,20 @@ void OpenMTRNet::DoTrace(sockaddr* dest)
         destAddr4 = *reinterpret_cast<sockaddr_in*>(dest);
     }
 
-    int fd = isV6 ? ::socket(AF_INET6, SOCK_DGRAM, IPPROTO_ICMPV6)
-                  : ::socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP);
-    if (fd < 0) {
-        tracing = false;
-        return;
+    // The socket normally comes from PrepareSocket(), called on the caller's
+    // thread before this one started (see OpenMTRNetWrapper::DoTrace()), so
+    // a refusal has already been reported there. Prepare one here when
+    // nobody did, or when it was prepared for the other address family.
+    const int family = isV6 ? AF_INET6 : AF_INET;
+    if (m_fd < 0 || m_fdFamily != family) {
+        if (PrepareSocket(family) != 0) {
+            tracing = false;
+            return;
+        }
     }
-    // Non-blocking is a hard requirement: the dispatch loop drains the
-    // socket until EAGAIN, which on a blocking socket would park the whole
-    // trace on the last recvfrom().
-    if (::fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
-        ::close(fd);
-        tracing = false;
-        return;
-    }
-
-#ifdef __APPLE__
-    // Room for the largest reply. macOS gives an ICMP socket an 8 KB receive
-    // buffer (net.inet.raw.recvspace = 8192), and an echo reply to a probe
-    // of about 8133 bytes or more does not fit in it with its overhead, so
-    // the kernel dropped it and every probe at those ping sizes timed out.
-    // A refusal is not fatal: everything else works as before.
-    int rcvbuf = 64 * 1024;
-    (void)::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
-#endif
-
-#ifdef __linux__
-    // Linux ping sockets don't hand ICMP error messages (Time Exceeded,
-    // Destination Unreachable) to a plain recvfrom() the way macOS/BSD's
-    // do — those get delivered to the socket's error queue instead, which
-    // has to be explicitly enabled and drained separately. See the
-    // POLLERR handling below. (No effect / not needed on macOS or BSD.)
-    //
-    // Failure here is fatal rather than ignorable: without the error queue
-    // no intermediate hop is ever heard from, so every row but the
-    // destination would read as a timeout and the app would look like a
-    // plain ping pretending to be a traceroute. Better to stop with the
-    // engine's own error path than to draw a confidently wrong route.
-    int recverr = 1;
-    const int recverrRc = isV6
-        ? ::setsockopt(fd, IPPROTO_IPV6, IPV6_RECVERR, &recverr, sizeof(recverr))
-        : ::setsockopt(fd, IPPROTO_IP,   IP_RECVERR,   &recverr, sizeof(recverr));
-    if (recverrRc < 0) {
-        ::close(fd);
-        tracing = false;
-        return;
-    }
-#endif
+    const int fd = m_fd;     // this trace owns it from here on, and closes it
+    m_fd       = -1;
+    m_fdFamily = AF_UNSPEC;
 
     // Per-hop schedule state — the POSIX equivalent of HopState above
     // (no OS-level wait handle, so nothing corresponding to hEvent).
