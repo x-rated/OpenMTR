@@ -188,6 +188,15 @@ const char* OpenMTRStatusText(unsigned long status, bool ipv6);
 #include <stop_token>
 #include <memory>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
+
+#ifndef _WIN32
+// The ICMPv4 checksum of a whole echo request (header and payload, with the
+// checksum field still zero), to be stored into it with memcpy(). POSIX
+// only: on Windows IcmpSendEcho2 builds the packet.
+uint16_t OpenMTRIcmpChecksum(const unsigned char* data, size_t length);
+#endif
 
 // ==========================================================================
 //  Constants

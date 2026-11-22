@@ -113,6 +113,42 @@ the end of "Finishing..." with no line break. Fixed by an explicit,
 idempotent `progress.finish()` call right before the report is printed;
 the destructor is now just a safety net for early-return paths.
 
+### Control characters in host names and ASNs
+A hop's name comes from its PTR record and its ASN from a Team Cymru TXT
+record: text from DNS, which went into the table and the reports as it
+arrived. Not every C library filters a PTR name (glibc rejects one with
+control characters in it, musl hands it over), and with such a name a line
+feed started a new CSV row, beginning with whatever followed it, and ESC
+reached the terminal in the text report. `OpenMTRNet::SetName()` now replaces
+control characters with `?`, and an ASN is only accepted as numbers separated
+by spaces. **Regression test**: `name_control_chars`.
+
+### ICMPv4 checksum of an odd-length probe on a big-endian CPU
+The POSIX engine added a packet's odd last byte to the checksum as a plain
+number, which makes it the low byte of the last 16-bit word: right on a
+little-endian CPU, wrong on a big-endian one, where the destination drops
+the probe. No released build could send such a probe: they are all
+little-endian, and on a Linux ping socket the kernel computes the checksum
+itself. It takes a big-endian build, a socket that takes the checksum from
+the program, and an odd `--size`. `OpenMTRIcmpChecksum()` now reads the
+words with `memcpy()` and gives the same bytes on either byte order.
+**Regression test**: `icmp_checksum` (on a little-endian machine it passed
+before the fix too).
+
+### No thread left for a hop's lookups ended the process
+Each new hop address gets a `std::thread` for its reverse-DNS lookup (on
+POSIX) and one for its ASN lookup (on every platform), and the constructor
+throws when the system refuses another thread. Nothing caught that, so it
+ended the process. Both are caught now: the hop keeps its address and gets
+no name, or no ASN for that trace. Windows already handled a failed
+`_beginthread` for the reverse-DNS lookup. Not covered: the threads created
+at Start (the trace's own, the one the window resolves the target on, and
+the update check's, which is compiled out by default) are started the same
+way, and a refusal there still ends the process. **Regression test**:
+`no_thread_for_dns` for the reverse-DNS lookup, which lowers `RLIMIT_NPROC`
+to cause the failure; that works on Linux as an unprivileged user, and the
+test skips elsewhere. The ASN lookup has no test.
+
 ## External quirks (not OpenMTR bugs, but needed a workaround)
 
 ### PowerShell silently dropped `>` redirection for the GUI-subsystem exe (resolved)
